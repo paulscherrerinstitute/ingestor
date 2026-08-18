@@ -11,7 +11,7 @@ use std::thread;
 use std::time::Duration;
 use clap::builder::Str;
 use axum::{extract::State,routing::get,Json, Router,};
-use tokio::sync::{Mutex};
+use tokio::sync::{Mutex, RwLock};
 
 const DEFAULT_PORT:u32 = 15000;
 
@@ -89,11 +89,11 @@ async fn main() {
 
     let app = App::new(debug);
     //let mut app = Arc::new(app);
-    let mut app = Arc::new(Mutex::new(app));
+    let mut app = Arc::new(RwLock::new(app));
     let api = api::init(app.clone());
     let address = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(address).await.unwrap();
     log::info!("REST API listening on {}", listener.local_addr().unwrap());
-    app.lock().await.start();
+    app.write().await.start();
     axum::serve(listener, api).await.unwrap();
 }

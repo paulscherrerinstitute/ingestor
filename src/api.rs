@@ -1,33 +1,70 @@
-use crate::app::*;
-use axum::{extract::State,routing::get,Json, Router, };
-
+use crate::app::{App, Status};
+use axum::{extract::State, routing::get, Json, Router, http::StatusCode, response::{IntoResponse}, Error};
 use std::sync::Arc;
 use serde::Serialize;
-use tokio::sync::{Mutex};
+use serde_json::json;
+use tokio::sync::{ RwLock};
+
 
 #[derive(Serialize)]
-pub struct Result {
+pub struct Response {
     status: String,
 }
-async fn state(State(app):  State<Arc<Mutex<App>>>) -> Json<crate::app::State> {
-    let app = app.lock().await;
-    Json(app.state())
+impl Response {
+    pub fn new(status: &str)-> Self {
+        Self {status:status.to_string()}
+    }
+    pub fn get(status: &str) -> Json<Response> {
+        Json(Self::new(status))
+    }
+    pub fn ok() -> Json<Response> {
+        Self::get("Success")
+    }
+}
+pub struct ResponseError {
+    error: String,
+}
+impl ResponseError {
+    pub fn get(error: String) -> Json<ResponseError> {
+        Json(Self{error})
+    }
 }
 
-async fn status(State(app): State<Arc<Mutex<App>>>) -> Json<Status> {
-    let app = app.lock().await;
-    Json(app.status())
+
+#[derive(Debug)]
+pub enum AppError {
+    Internal(String),
 }
 
-async fn close(State(app): State<Arc<Mutex<App>>>) -> Json<Result> {
-    let mut app = app.lock().await;
+impl IntoResponse for AppError {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            AppError::Internal(message) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": message})),
+            ).into_response(),
+        }
+    }
+}
+
+async fn state(State(app):  State<Arc<RwLock<App>>>) -> Result<Json<crate::app::State>, AppError> {
+    let app = app.read().await;
+    Ok(Json(app.state()))
+}
+
+async fn status(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Status>, AppError> {
+    let app = app.read().await;
+    Ok(Json(app.status()))
+}
+
+async fn close(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
+    let mut app = app.write().await;
     app.close();
-    Json(Result {
-        status: "Ok".to_string(),
-    })
+    //Ok(Response::ok())
+    Err(AppError::Internal("Server closed".to_string()))
 }
 
-pub fn init(app:Arc<Mutex<App>>) -> Router {
+pub fn init(app:Arc<RwLock<App>>) -> Router {
     let api = Router::new()
         .route("/api/status", get(status))
         .route("/api/state", get(state))

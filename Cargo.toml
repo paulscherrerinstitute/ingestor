@@ -11,3 +11,4 @@ serde = { version = "1", features = ["derive"] }
 bsread = {version = "0.4.0", features = ["async"],  path = "/Users/gobbo_a/dev/bsread_rust"}
 env_logger = "0.10"
 clap = "4.5.23"
+serde_json = "1.0.151"
