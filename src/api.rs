@@ -35,6 +35,11 @@ impl ResponseError {
 pub enum AppError {
     Internal(String),
 }
+impl AppError {
+    pub fn get(error: &str) -> AppError {
+        Self::Internal(error.to_string())
+    }
+}
 
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
@@ -44,6 +49,12 @@ impl IntoResponse for AppError {
                 Json(json!({"error": message})),
             ).into_response(),
         }
+    }
+}
+
+impl From<std::io::Error> for AppError {
+    fn from(err: std::io::Error) -> Self {
+        AppError::Internal(err.to_string())
     }
 }
 
@@ -59,9 +70,8 @@ async fn status(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Status>, App
 
 async fn close(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
     let mut app = app.write().await;
-    app.close();
-    //Ok(Response::ok())
-    Err(AppError::Internal("Server closed".to_string()))
+    let status = app.close()?;
+    Ok(Response::ok())
 }
 
 pub fn init(app:Arc<RwLock<App>>) -> Router {

@@ -1,8 +1,10 @@
+use std::io::ErrorKind;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use bsread::Bsread;
+use bsread::{Bsread, IOError, IOResult};
 use serde::Serialize;
+use crate::api::AppError;
 
 #[derive(Clone)]
 #[derive(Serialize)]
@@ -60,9 +62,10 @@ impl App {
         }
     }
 
-    pub fn close(&mut self)  {
+        pub fn close(&mut self) -> IOResult<()> {
         self.state = State::Closing;
         self.state = State::Closed;
+        Ok(())
     }
 
 }
