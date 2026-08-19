@@ -1,5 +1,6 @@
 mod app;
 mod api;
+mod engine;
 
 use log;
 use clap::{Arg, Command};
@@ -11,11 +12,30 @@ use std::thread;
 use std::time::Duration;
 use clap::builder::Str;
 use axum::{extract::State,routing::get,Json, Router,};
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
+use tokio::sync::mpsc::channel;
+use crate::engine::Engine;
 
 const DEFAULT_PORT:u32 = 15000;
 
+#[derive(Serialize, Clone)]
+pub struct Arguments {
+    capacity: usize,
+    receivers: usize,
+    debug:bool
+}
 
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Config {
+    endpoints:Vec<String>,
+}
+
+impl Config {
+    fn update(&mut self, endpoints:Vec<String>)  {
+        self.endpoints = endpoints.clone();
+    }
+}
 
 #[macro_export]
 macro_rules! exit {
@@ -56,6 +76,22 @@ async fn main() {
                 .help("Debug flag")
                 .num_args(0), // Does not take a value
         )
+        .arg(
+            Arg::new("Capacity")
+                .short('c')
+                .long("capacity")
+                .help("Maximum endpoints per context")
+                .num_args(1) // Expects one value
+                .required(false),
+        )
+        .arg(
+            Arg::new("Receivers")
+                .short('r')
+                .long("receivers")
+                .help("Number of receivers per context")
+                .num_args(1) // Expects one value
+                .required(false),
+        )
         .get_matches();
 
     // Check if the help flag is present
@@ -81,19 +117,38 @@ async fn main() {
         DEFAULT_PORT
     };
 
+    let capacity =if let Some(text) = matches.get_one::<String>("Capacity") {
+        match text.parse::<usize>() {
+            Ok(number) => number,
+            Err(_) => {exit!("Invalid capacity value: {}", text);},
+        }
+    } else {
+        100
+    };
+
+    let receivers =if let Some(text) = matches.get_one::<String>("Receivers") {
+        match text.parse::<usize>() {
+            Ok(number) => number,
+            Err(_) => {exit!("Invalid receivers value: {}", text);},
+        }
+    } else {
+        1
+    };
+
     let debug = if matches.get_flag("Debug") {
         true
     }   else {
         false
     };
 
-    let app = App::new(debug);
+    let arguments = Arguments{capacity, receivers, debug};
+    let app = App::new(arguments.clone());
     //let mut app = Arc::new(app);
     let mut app = Arc::new(RwLock::new(app));
     let api = api::init(app.clone());
     let address = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(address).await.unwrap();
     log::info!("REST API listening on {}", listener.local_addr().unwrap());
-    app.write().await.start();
+    app.write().await.start().await.unwrap();
     axum::serve(listener, api).await.unwrap();
 }

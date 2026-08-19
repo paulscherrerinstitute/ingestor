@@ -1,5 +1,6 @@
+use crate::{Arguments, Config};
 use crate::app::{App, Status};
-use axum::{extract::State, routing::get, Json, Router, http::StatusCode, response::{IntoResponse}, Error};
+use axum::{extract::State, routing::get, routing::post, routing::put, Json, Router, http::StatusCode, response::{IntoResponse}, Error};
 use std::sync::Arc;
 use serde::Serialize;
 use serde_json::json;
@@ -58,6 +59,11 @@ impl From<std::io::Error> for AppError {
     }
 }
 
+async fn args(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Arguments>, AppError> {
+    let app = app.read().await;
+    Ok(Json(app.arguments()))
+}
+
 async fn state(State(app):  State<Arc<RwLock<App>>>) -> Result<Json<crate::app::State>, AppError> {
     let app = app.read().await;
     Ok(Json(app.state()))
@@ -68,9 +74,32 @@ async fn status(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Status>, App
     Ok(Json(app.status()))
 }
 
+async fn config(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Config>, AppError> {
+    let app = app.read().await;
+    Ok(Json(app.config()))
+}
+
 async fn close(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
     let mut app = app.write().await;
     let status = app.close()?;
+    Ok(Response::ok())
+}
+
+async fn start(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
+    let mut app = app.write().await;
+    let status = app.start().await?;
+    Ok(Response::ok())
+}
+
+async fn stop(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
+    let mut app = app.write().await;
+    let status = app.stop().await?;
+    Ok(Response::ok())
+}
+
+async fn set_config(State(app): State<Arc<RwLock<App>>>,Json(config): Json<Config>,) -> Result<Json<Response>, AppError> {
+    let mut app = app.write().await;
+    app.set_config(config).await?;
     Ok(Response::ok())
 }
 
@@ -78,7 +107,12 @@ pub fn init(app:Arc<RwLock<App>>) -> Router {
     let api = Router::new()
         .route("/api/status", get(status))
         .route("/api/state", get(state))
-        .route("/api/close", get(close))
+        .route("/api/args", get(args))
+        .route("/api/config", get(config))
+        .route("/api/start", post(start))
+        .route("/api/stop", post(stop))
+        .route("/api/close", post(close))
+        .route("/api/config", put(set_config))
         .with_state(app);
     api
 }
