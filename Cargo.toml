@@ -12,3 +12,4 @@ bsread = {version = "0.4.0", features = ["async"],  path = "/Users/gobbo_a/dev/b
 env_logger = "0.10"
 clap = "4.5.23"
 serde_json = "1.0.151"
+crossbeam-channel = "0.5.16"

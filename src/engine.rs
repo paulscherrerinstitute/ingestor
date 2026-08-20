@@ -2,13 +2,14 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use bsread::{Bsread, ConnectionMode, EndpointEvent, EndpointState, IOError, IOResult, Pool, SocketType};
+use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Pool, SocketType};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use crate::api::AppError;
 use crate::Arguments;
 use crate::Config;
 use tokio::sync::mpsc::Receiver;
+use crossbeam_channel;
 
 pub enum EngineCommand {
     Connect {
@@ -21,14 +22,22 @@ pub enum EngineCommand {
         config: Config,
         response: tokio::sync::oneshot::Sender<IOResult<()>>,
     },
+    Diags {
+        response: tokio::sync::oneshot::Sender<IOResult<(HashMap<String, HashMap<EndpointDiag, u32>>)>>,
+    },
+    Status {
+        response: tokio::sync::oneshot::Sender<IOResult<(HashMap<String, EndpointState>)>>,
+    },
 }
 
 pub struct Engine {
     arguments:Arguments,
     contexts: Vec<Arc<Bsread>>,
-    endpoints:Vec<String>,
     pools: Vec<Pool>,
+    event_receivers: Vec<crossbeam_channel::Receiver<EndpointEvent>>,
+    endpoints:Vec<String>,
     current: usize,
+    connected:bool,
 }
 
 impl Engine {
@@ -36,13 +45,17 @@ impl Engine {
         let contexts = Vec::new();
         let pools = Vec::new();
         let endpoints = Vec::new();
+        let event_receivers = Vec::new();
 
-        let engine = Engine {arguments, contexts, endpoints, pools, current:0,};
+        let engine = Engine {arguments, contexts, event_receivers, endpoints, pools, current:0,connected: false};
 
-        tokio::spawn(async move {
+        //Cannot be async, ZMQ calls must be called from the same thread.
+        //tokio::spawn(async move {
+        std::thread::spawn(move || {
             let mut engine = engine;
             let mut engine_rx = engine_rx;
-            while let Some(command) = engine_rx.recv().await {
+            //while let Some(command) = engine_rx.recv().await {
+            while let Some(command) = engine_rx.blocking_recv() {
                 match command {
                     EngineCommand::Connect { response } => {
                         let result = engine.connect();
@@ -55,8 +68,17 @@ impl Engine {
                     }
 
                     EngineCommand::Config { config, response } => {
-                        engine.endpoints = config.endpoints;
+                        engine.apply_config(config);
                         let _ = response.send(Ok(()));
+                    }
+
+                    EngineCommand::Diags { response } => {
+                        let _ = response.send(Ok(engine.diags()));
+                    }
+
+
+                    EngineCommand::Status { response } => {
+                        let _ = response.send(Ok(engine.status()));
                     }
                 }
             }
@@ -73,7 +95,9 @@ impl Engine {
         }
         self.pools = Vec::new();
         self.contexts = Vec::new();
+        self.event_receivers = Vec::new();
         self.current = 0;
+        self.connected = false;
         Ok(())
     }
 
@@ -81,17 +105,20 @@ impl Engine {
         self.disconnect();
         self.add_pool();
         self.current = 0;
+        self.connected = true;
         for endpoint in self.endpoints.clone() {
             self.try_connect_endpoint(&endpoint);
         }
         Ok(())
     }
 
-    pub fn apply_config(&mut self, config: Config) -> IOResult<()> {
+    fn apply_config(&mut self, config: Config) -> IOResult<()> {
         if self.endpoints.len()==0{
             //Initial config
             self.endpoints = config.endpoints;
-            self.connect()
+            if self.connected {
+                self.connect()?;
+            }
         } else {
             //Incremental config
             //remove duplicates
@@ -119,8 +146,8 @@ impl Engine {
                 self.try_connect_endpoint(&endpoint);
             }
             self.endpoints = endpoints;
-            Ok(())
         }
+        Ok(())
     }
 
 
@@ -143,14 +170,14 @@ impl Engine {
     }
 
     fn connect_endpoint(&mut self, endpoint: &String) -> IOResult<()> {
-        let capacity = self.capacity();
+        let pool_size = self.pool_size();
         if self.endpoint_pool(endpoint).is_none(){
             let mut pool = self.current();
-            if pool.connections() > capacity {
+            if pool.connections() > pool_size {
                 self.add_pool()?;
                 pool = self.current();
             }
-            pool.add_endpoint(endpoint, None)?
+            pool.add_endpoint(endpoint, None)?;
         }
         Ok(())
     }
@@ -168,24 +195,43 @@ impl Engine {
     fn add_pool(&mut self) -> IOResult<()>  {
         let context =  Bsread::new()?;
         let mut pool = context.pool(vec![], SocketType::PULL, ConnectionMode::Individual, self.receivers() )?;
+        let event_receiver = pool.enable_monitoring()?;
+        pool.connect()?;
+        //pool.start(100);
         self.contexts.push(context);
         self.pools.push(pool);
+        self.event_receivers.push(event_receiver);
         self.current = self.current + 1;
         Ok(())
     }
 
-    pub fn capacity(& self) -> usize {
-        self.arguments.capacity
+    fn pool_size(& self) -> usize {
+        self.arguments.pool_size
     }
 
-    pub fn receivers(& self) -> usize {
+    fn receivers(& self) -> usize {
         self.arguments.receivers
     }
 
-    pub fn pools(& self) -> &Vec<Pool> {
+    fn pools(& self) -> &Vec<Pool> {
         &self.pools
     }
 
+    fn diags(& self) -> HashMap<String, HashMap<EndpointDiag, u32>>{
+        let mut diagnostics = HashMap::new();
+        for pool in self.pools.iter() {
+            diagnostics.extend(pool.diagnostics());
+        }
+        diagnostics
+    }
+
+    fn status(& self) -> HashMap<String, EndpointState> {
+        let mut endpoint_states = HashMap::new();
+        for pool in self.pools.iter() {
+            endpoint_states.extend(pool.endpoint_states());
+        }
+        endpoint_states
+    }
 
 }
 impl Drop for Engine {

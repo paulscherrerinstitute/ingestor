@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use crate::{Arguments, Config};
 use crate::app::{App, Status};
 use axum::{extract::State, routing::get, routing::post, routing::put, Json, Router, http::StatusCode, response::{IntoResponse}, Error};
 use std::sync::Arc;
+use bsread::EndpointDiag;
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::{ RwLock};
@@ -71,18 +73,17 @@ async fn state(State(app):  State<Arc<RwLock<App>>>) -> Result<Json<crate::app::
 
 async fn status(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Status>, AppError> {
     let app = app.read().await;
-    Ok(Json(app.status()))
+    Ok(Json(app.status().await?))
+}
+
+async fn diags(State(app): State<Arc<RwLock<App>>>) -> Result<Json<HashMap<String, HashMap<EndpointDiag, u32>>>, AppError> {
+    let app = app.read().await;
+    Ok(Json(app.diags().await?))
 }
 
 async fn config(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Config>, AppError> {
     let app = app.read().await;
     Ok(Json(app.config()))
-}
-
-async fn close(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
-    let mut app = app.write().await;
-    let status = app.close()?;
-    Ok(Response::ok())
 }
 
 async fn start(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
@@ -105,13 +106,13 @@ async fn set_config(State(app): State<Arc<RwLock<App>>>,Json(config): Json<Confi
 
 pub fn init(app:Arc<RwLock<App>>) -> Router {
     let api = Router::new()
-        .route("/api/status", get(status))
-        .route("/api/state", get(state))
         .route("/api/args", get(args))
+        .route("/api/state", get(state))
+        .route("/api/status", get(status))
+        .route("/api/diags", get(diags))
         .route("/api/config", get(config))
         .route("/api/start", post(start))
         .route("/api/stop", post(stop))
-        .route("/api/close", post(close))
         .route("/api/config", put(set_config))
         .with_state(app);
     api

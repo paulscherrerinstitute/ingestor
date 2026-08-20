@@ -21,9 +21,11 @@ const DEFAULT_PORT:u32 = 15000;
 
 #[derive(Serialize, Clone)]
 pub struct Arguments {
-    capacity: usize,
+    pool_size: usize,
     receivers: usize,
-    debug:bool
+    debug:bool,
+    config_path:Option<String>,
+    auto_start:bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -32,9 +34,22 @@ pub struct Config {
 }
 
 impl Config {
-    fn update(&mut self, endpoints:Vec<String>)  {
+    pub fn update(&mut self, endpoints:Vec<String>)  {
         self.endpoints = endpoints.clone();
     }
+
+    pub fn load(path: &str) -> IOResult<Self> {
+        let json =std::fs::read_to_string("config.json")?;
+        let config: Config = serde_json::from_str(&json)?;
+        Ok(config)
+    }
+
+    pub fn save(&self, path: &str) -> IOResult<()> {
+        let json = serde_json::to_string_pretty(&self)?;
+        std::fs::write("config.json", json)?;
+        Ok(())
+    }
+
 }
 
 #[macro_export]
@@ -77,9 +92,9 @@ async fn main() {
                 .num_args(0), // Does not take a value
         )
         .arg(
-            Arg::new("Capacity")
-                .short('c')
-                .long("capacity")
+            Arg::new("PoolSize")
+                .short('s')
+                .long("size")
                 .help("Maximum endpoints per context")
                 .num_args(1) // Expects one value
                 .required(false),
@@ -92,6 +107,22 @@ async fn main() {
                 .num_args(1) // Expects one value
                 .required(false),
         )
+        .arg(
+            Arg::new("ConfigPath")
+                .short('c')
+                .long("config")
+                .help("Configuration file name")
+                .num_args(1) // Expects one value
+                .required(false),
+        )
+        .arg(
+            Arg::new("AutoStart")
+                .short('a')
+                .long("auto")
+                .help("Auto-start connections")
+                .num_args(0), // Does not take a value
+        )
+
         .get_matches();
 
     // Check if the help flag is present
@@ -117,10 +148,10 @@ async fn main() {
         DEFAULT_PORT
     };
 
-    let capacity =if let Some(text) = matches.get_one::<String>("Capacity") {
+    let pool_size =if let Some(text) = matches.get_one::<String>("PoolSize") {
         match text.parse::<usize>() {
             Ok(number) => number,
-            Err(_) => {exit!("Invalid capacity value: {}", text);},
+            Err(_) => {exit!("Invalid pool size value: {}", text);},
         }
     } else {
         100
@@ -135,20 +166,29 @@ async fn main() {
         1
     };
 
+    let config_path= matches.get_one::<String>("ConfigPath").cloned();
+
     let debug = if matches.get_flag("Debug") {
         true
     }   else {
         false
     };
 
-    let arguments = Arguments{capacity, receivers, debug};
+    let auto_start = if matches.get_flag("AutoStart") {
+        true
+    }   else {
+        false
+    };
+
+    let arguments = Arguments{ pool_size, receivers, debug, config_path, auto_start};
     let app = App::new(arguments.clone());
-    //let mut app = Arc::new(app);
     let mut app = Arc::new(RwLock::new(app));
     let api = api::init(app.clone());
     let address = format!("0.0.0.0:{}", port);
     let listener = tokio::net::TcpListener::bind(address).await.unwrap();
     log::info!("REST API listening on {}", listener.local_addr().unwrap());
-    app.write().await.start().await.unwrap();
+    if auto_start {
+        app.write().await.start().await.unwrap();
+    }
     axum::serve(listener, api).await.unwrap();
 }
