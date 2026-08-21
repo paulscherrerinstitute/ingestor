@@ -5,17 +5,19 @@ use std::time::Duration;
 use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Pool, SocketType};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::api::AppError;
 use crate::Arguments;
 use crate::Config;
 use tokio::sync::mpsc::Receiver;
 use crossbeam_channel;
+use tokio::runtime::{Runtime, Handle};
 
 pub enum EngineCommand {
-    Connect {
+    Start {
         response: tokio::sync::oneshot::Sender<IOResult<()>>,
     },
-    Disconnect {
+    Stop {
         response: tokio::sync::oneshot::Sender<IOResult<()>>,
     },
     Config {
@@ -36,39 +38,58 @@ pub struct Engine {
     pools: Vec<Pool>,
     event_receivers: Vec<crossbeam_channel::Receiver<EndpointEvent>>,
     endpoints:Vec<String>,
+    handle: Handle,
     current: usize,
     connected:bool,
 }
 
 impl Engine {
-    pub fn launch(arguments:Arguments, engine_rx:Receiver<EngineCommand>) {
+    pub fn launch(arguments:Arguments, engine_rx:Receiver<EngineCommand>, handle:Handle) {
         let contexts = Vec::new();
         let pools = Vec::new();
         let endpoints = Vec::new();
         let event_receivers = Vec::new();
 
-        let engine = Engine {arguments, contexts, event_receivers, endpoints, pools, current:0,connected: false};
+        //let handle =  Handle::current().clone();
+        //Creating a dedicated runtime instead of ?
+        let engine = Engine {arguments, contexts, event_receivers, endpoints, pools, handle, current:0,connected: false};
+
 
         //Cannot be async, ZMQ calls must be called from the same thread.
         //tokio::spawn(async move {
         std::thread::spawn(move || {
             let mut engine = engine;
             let mut engine_rx = engine_rx;
+            /*
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                //.thread_name("async_carrier")
+                .thread_name_fn(|| {
+                    static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
+                    let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
+                    format!("async_carrier-{}", id)
+                })
+                .enable_all()
+                .build()
+                .unwrap();
+            engine.handle = runtime.handle().clone();
+            */
+
             //while let Some(command) = engine_rx.recv().await {
             while let Some(command) = engine_rx.blocking_recv() {
                 match command {
-                    EngineCommand::Connect { response } => {
-                        let result = engine.connect();
+                    EngineCommand::Start { response } => {
+                        let result = engine.start();
                         let _ = response.send(result);
                     }
 
-                    EngineCommand::Disconnect { response } => {
-                        let result = engine.disconnect();
+                    EngineCommand::Stop { response } => {
+                        let result = engine.stop();
                         let _ = response.send(result);
                     }
 
                     EngineCommand::Config { config, response } => {
-                        engine.apply_config(config);
+                        engine.config(config);
                         let _ = response.send(Ok(()));
                     }
 
@@ -86,10 +107,11 @@ impl Engine {
     }
 
 
-    fn disconnect(& mut self) -> IOResult<()> {
+    fn stop(& mut self) -> IOResult<()> {
         //for (context, pool) in self.contexts.iter().zip(self.pools.iter()) {
         for mut pool in self.pools.iter_mut() {
             pool.disconnect();
+            pool.stop_async();
         }
         for mut context in self.contexts.iter_mut() {
         }
@@ -101,8 +123,8 @@ impl Engine {
         Ok(())
     }
 
-    fn connect(& mut self) -> IOResult<()> {
-        self.disconnect();
+    fn start(& mut self) -> IOResult<()> {
+        self.stop();
         self.add_pool();
         self.current = 0;
         self.connected = true;
@@ -112,12 +134,12 @@ impl Engine {
         Ok(())
     }
 
-    fn apply_config(&mut self, config: Config) -> IOResult<()> {
+    fn config(&mut self, config: Config) -> IOResult<()> {
         if self.endpoints.len()==0{
             //Initial config
             self.endpoints = config.endpoints;
             if self.connected {
-                self.connect()?;
+                self.start()?;
             }
         } else {
             //Incremental config
@@ -193,11 +215,18 @@ impl Engine {
     }
 
     fn add_pool(&mut self) -> IOResult<()>  {
+        let callback = |msg| async move {
+            //println!("Async callback");
+        };
+
         let context =  Bsread::new()?;
         let mut pool = context.pool(vec![], SocketType::PULL, ConnectionMode::Individual, self.receivers() )?;
         let event_receiver = pool.enable_monitoring()?;
-        pool.connect()?;
-        //pool.start(100);
+        //pool.connect()?;
+
+        let handle = self.handle.clone();
+        pool.start_async(callback,true,Some(handle),)?;
+
         self.contexts.push(context);
         self.pools.push(pool);
         self.event_receivers.push(event_receiver);
@@ -236,6 +265,6 @@ impl Engine {
 }
 impl Drop for Engine {
     fn drop(&mut self) {
-        self.disconnect();
+        self.stop();
     }
 }

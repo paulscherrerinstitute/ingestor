@@ -48,15 +48,16 @@ impl App {
                 }
             }
         }
+        let handle = tokio::runtime::Handle::current();
         let (engine_tx, mut engine_rx) = channel::<engine::EngineCommand>(32);
-        Engine::launch(arguments.clone(), engine_rx);
+        Engine::launch(arguments.clone(), engine_rx, handle.clone());
         App {arguments, config, engine_tx, state:State::Initializing}
     }
 
     async fn connect(&mut self) -> IOResult<()> {
         let (tx, rx) = oneshot::channel();
         self.engine_tx
-            .send(EngineCommand::Connect { response: tx })
+            .send(EngineCommand::Start { response: tx })
             .await
             .map_err(|_| {IOError::new(std::io::ErrorKind::BrokenPipe,"Engine is not running",)})?;
         rx.await
@@ -67,7 +68,7 @@ impl App {
     async fn disconnect(&self) -> IOResult<()> {
         let (tx, rx) = oneshot::channel();
         self.engine_tx
-            .send(EngineCommand::Disconnect { response: tx })
+            .send(EngineCommand::Stop { response: tx })
             .await
             .map_err(|_| {IOError::new(std::io::ErrorKind::BrokenPipe,"Engine is not running",)})?;
         rx.await
