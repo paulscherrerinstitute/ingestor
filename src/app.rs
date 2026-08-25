@@ -11,6 +11,7 @@ use crate::Config;
 use tokio::sync::mpsc::{channel, Sender};
 use crate::engine::{Engine, EngineCommand};
 use tokio::sync::oneshot;
+use crate::processor::Processor;
 
 #[derive(Serialize, PartialEq, Clone)]
 pub enum State {
@@ -50,7 +51,8 @@ impl App {
         }
         let handle = tokio::runtime::Handle::current();
         let (engine_tx, mut engine_rx) = channel::<engine::EngineCommand>(32);
-        Engine::launch(arguments.clone(), engine_rx, handle.clone());
+        let processor = Arc::new(Processor::new());
+        Engine::launch(arguments.clone(), engine_rx, handle.clone(), processor);
         App {arguments, config, engine_tx, state:State::Initializing}
     }
 

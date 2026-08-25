@@ -1,6 +1,7 @@
 mod app;
 mod api;
 mod engine;
+mod processor;
 
 use log;
 use clap::{Arg, Command};
@@ -26,6 +27,7 @@ pub struct Arguments {
     debug:bool,
     config_path:Option<String>,
     auto_start:bool,
+    concurrent:bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -71,7 +73,7 @@ async fn main() {
                 .short('l')
                 .long("log")
                 .value_name("LOG")
-                .help("Log level")
+                .help("Log level (dafault=info)")
                 .num_args(1) // Expects one value
                 .required(false),
         )
@@ -80,7 +82,7 @@ async fn main() {
                 .short('p')
                 .long("port")
                 .value_name("PORT")
-                .help("Port of the first sender")
+                .help(format!("Port of the API (default={})", DEFAULT_PORT))
                 .num_args(1) // Expects one value
                 .required(false),
         )
@@ -95,7 +97,7 @@ async fn main() {
             Arg::new("PoolSize")
                 .short('s')
                 .long("size")
-                .help("Maximum endpoints per context")
+                .help("Maximum endpoints per context (default=100)")
                 .num_args(1) // Expects one value
                 .required(false),
         )
@@ -103,7 +105,7 @@ async fn main() {
             Arg::new("Receivers")
                 .short('r')
                 .long("receivers")
-                .help("Number of receivers per context")
+                .help("Number of receivers per context (default=1)")
                 .num_args(1) // Expects one value
                 .required(false),
         )
@@ -120,6 +122,13 @@ async fn main() {
                 .short('a')
                 .long("auto")
                 .help("Auto-start connections")
+                .num_args(0), // Does not take a value
+        )
+        .arg(
+            Arg::new("Concurrent")
+                .short('t')
+                .long("concurrent")
+                .help("Does not order sequentially messages from each endpoint")
                 .num_args(0), // Does not take a value
         )
 
@@ -180,7 +189,13 @@ async fn main() {
         false
     };
 
-    let arguments = Arguments{ pool_size, receivers, debug, config_path, auto_start};
+    let concurrent = if matches.get_flag("Concurrent") {
+        true
+    }   else {
+        false
+    };
+
+    let arguments = Arguments{ pool_size, receivers, debug, config_path, auto_start, concurrent};
     let app = App::new(arguments.clone());
     let mut app = Arc::new(RwLock::new(app));
     let api = api::init(app.clone());

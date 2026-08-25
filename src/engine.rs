@@ -2,11 +2,13 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Pool, SocketType};
+use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Message, Pool, ReceivedMessage, SocketType};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread::Thread;
 use crate::api::AppError;
+use crate::processor::Processor;
 use crate::Arguments;
 use crate::Config;
 use tokio::sync::mpsc::Receiver;
@@ -41,10 +43,11 @@ pub struct Engine {
     handle: Handle,
     current: usize,
     connected:bool,
+    processor: Arc<Processor>,
 }
 
 impl Engine {
-    pub fn launch(arguments:Arguments, engine_rx:Receiver<EngineCommand>, handle:Handle) {
+    pub fn launch(arguments:Arguments, engine_rx:Receiver<EngineCommand>, handle:Handle, processor:Arc<Processor>) {
         let contexts = Vec::new();
         let pools = Vec::new();
         let endpoints = Vec::new();
@@ -52,8 +55,8 @@ impl Engine {
 
         //let handle =  Handle::current().clone();
         //Creating a dedicated runtime instead of ?
-        let engine = Engine {arguments, contexts, event_receivers, endpoints, pools, handle, current:0,connected: false};
-
+        let processor = processor.clone();
+        let engine = Engine {arguments, contexts, event_receivers, endpoints, pools, handle, processor, current:0,connected: false};
 
         //Cannot be async, ZMQ calls must be called from the same thread.
         //tokio::spawn(async move {
@@ -215,8 +218,17 @@ impl Engine {
     }
 
     fn add_pool(&mut self) -> IOResult<()>  {
-        let callback = |msg| async move {
-            //println!("Async callback");
+        //let callback = |msg| async move {
+        //}
+        let processor = self.processor.clone();
+        let callback = {
+            let processor = processor.clone();
+            move |msg: ReceivedMessage| {
+                let processor = processor.clone();
+                async move {
+                    processor.process(msg.endpoint, msg.message).await;
+                }
+            }
         };
 
         let context =  Bsread::new()?;
@@ -225,7 +237,7 @@ impl Engine {
         //pool.connect()?;
 
         let handle = self.handle.clone();
-        pool.start_async(callback,true,Some(handle),)?;
+        pool.start_async(callback, self.arguments.concurrent, Some(handle),)?;
 
         self.contexts.push(context);
         self.pools.push(pool);
