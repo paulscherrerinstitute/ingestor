@@ -21,9 +21,9 @@ impl Processor {
 
     pub async fn process(&self, endpoint:Option<String>, message:Message){
         let id = message.id() as i32;
-        if id % 2 ==0{
-            thread::sleep(Duration::from_millis(50));
-        }
+        //if id % 2 ==0{
+        //    thread::sleep(Duration::from_millis(50));
+       // }
         let endpoint = endpoint.unwrap_or(String::from(""));
         let mut last_ids = self.last_ids.lock().unwrap();
 
