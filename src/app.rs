@@ -19,7 +19,7 @@ pub enum State {
     Stopped,
     Started,
     Error,
-    Closed
+    Closed,
 }
 
 #[derive(Serialize)]
@@ -28,6 +28,14 @@ pub struct Status {
     endpoints: HashMap<String, EndpointState>
 }
 
+#[derive(Serialize)]
+pub struct Stats {
+    pub  received: u32,
+    pub  errors: u32,
+    pub  dropped: u32,
+    pub  processing: u32,
+    pub  processed: u32,
+}
 
 pub struct App {
     arguments:Arguments,
@@ -56,47 +64,12 @@ impl App {
         App {arguments, config, engine_tx, state:State::Initializing}
     }
 
-    async fn connect(&mut self) -> IOResult<()> {
-        let (tx, rx) = oneshot::channel();
-        self.engine_tx
-            .send(EngineCommand::Start { response: tx })
-            .await
-            .map_err(|_| {IOError::new(std::io::ErrorKind::BrokenPipe,"Engine is not running",)})?;
-        rx.await
-            .map_err(|_| {IOError::new(std::io::ErrorKind::BrokenPipe,"Engine terminated",)})?;
-        Ok(())
-    }
-
-    async fn disconnect(&self) -> IOResult<()> {
-        let (tx, rx) = oneshot::channel();
-        self.engine_tx
-            .send(EngineCommand::Stop { response: tx })
-            .await
-            .map_err(|_| {IOError::new(std::io::ErrorKind::BrokenPipe,"Engine is not running",)})?;
-        rx.await
-            .map_err(|_| {IOError::new(std::io::ErrorKind::BrokenPipe,"Engine terminated",)})?;
-        Ok(())
-    }
-
-    async fn send_config(&self) -> IOResult<()> {
-        let (tx, rx) = oneshot::channel();
-        self.engine_tx
-            .send(EngineCommand::Config {config: self.config.clone(),response: tx,})
-            .await
-            .map_err(|_| {IOError::new(std::io::ErrorKind::BrokenPipe,"Engine is not running",)})?;
-        rx.await
-            .map_err(|_| {IOError::new(std::io::ErrorKind::BrokenPipe,"Engine terminated",)})?;
-        Ok(())
-    }
-
-
     pub async fn set_config(&mut self, config: Config) -> IOResult<()> {
         self.config = config;
         if let Some(config_path) = self.arguments.config_path.clone(){
             if let Err(e) = self.config.save(config_path.as_str()) {
                     log::error!("Error saving config to {}: {}", &config_path, e);
             }
-
         }
         match self.send_config().await{
             Ok(_) => {
@@ -163,30 +136,44 @@ impl App {
         self.config.clone()
     }
 
+    async fn send_command<T>(&self,command: impl FnOnce(oneshot::Sender<IOResult<T>>) -> EngineCommand,) -> IOResult<T> {
+        let (tx, rx) = oneshot::channel();
+        self.engine_tx.send(command(tx)).await
+            .map_err(|_| {IOError::new(ErrorKind::BrokenPipe,"Engine is not running",)})?;
+        rx.await.
+            map_err(|_| {IOError::new(ErrorKind::BrokenPipe,"Engine terminated",)})?
+    }
+
+    async fn connect(&mut self) -> IOResult<()> {
+        self.send_command(|response| EngineCommand::Start { response }).await
+    }
+
+    async fn disconnect(&self) -> IOResult<()> {
+        self.send_command(|response| EngineCommand::Stop { response }).await
+    }
+
+    async fn send_config(&self) -> IOResult<()> {
+        let config = self.config.clone();
+        self.send_command(|response| {EngineCommand::Config { config, response }}).await
+    }
+
     pub async fn status(&self) ->  IOResult<Status> {
-        let (tx, rx) = oneshot::channel();
-        self.engine_tx
-            .send(EngineCommand::Status { response: tx })
-            .await
-            .map_err(|_| {IOError::new(std::io::ErrorKind::BrokenPipe,"Engine is not running",)})?;
-        let endpoints =  match rx.await
-            .map_err(|_| {IOError::new(std::io::ErrorKind::BrokenPipe,"Engine terminated",)}) {
-            Ok(endpoints) => endpoints?,
-            Err(_) => {HashMap::new()}
-        };
-        Ok(Status {state: self.state(),endpoints})
+        let endpoints = self.send_command(|response| EngineCommand::Status { response })
+            .await?;
+        Ok(Status {state: self.state(),endpoints,})
     }
 
-    pub async fn  diags(& self) -> IOResult<HashMap<String, HashMap<EndpointDiag, u32>>>{
-        let (tx, rx) = oneshot::channel();
-        self.engine_tx
-            .send(EngineCommand::Diags { response: tx })
-            .await
-            .map_err(|_| {IOError::new(std::io::ErrorKind::BrokenPipe,"Engine is not running",)})?;
-        rx.await
-            .map_err(|_| {IOError::new(std::io::ErrorKind::BrokenPipe,"Engine terminated",)})?
+    pub async fn stats(&self) -> IOResult<Stats> {
+        self.send_command(|response| EngineCommand::Stats { response }).await
     }
 
+    pub async fn diags(&self,) -> IOResult<HashMap<String, HashMap<EndpointDiag, u32>>> {
+        self.send_command(|response| EngineCommand::Diags { response }).await
+    }
+
+    pub async fn reset_stats(&self) -> IOResult<()> {
+        self.send_command(|response| EngineCommand::ResetStats { response }).await
+    }
     pub fn close(&mut self) -> IOResult<()> {
         self.state = State::Closed;
         Ok(())

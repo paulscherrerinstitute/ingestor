@@ -5,14 +5,17 @@ use std::time::Duration;
 use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Message, Pool, ReceivedMessage, SocketType};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::thread::Thread;
+use bsread::receiver::AsyncExecution;
+use crate::app::Stats;
 use crate::api::AppError;
 use crate::processor::Processor;
 use crate::Arguments;
 use crate::Config;
 use tokio::sync::mpsc::Receiver;
 use crossbeam_channel;
+use crossbeam_channel::RecvError;
 use tokio::runtime::{Runtime, Handle};
 
 pub enum EngineCommand {
@@ -32,18 +35,25 @@ pub enum EngineCommand {
     Status {
         response: tokio::sync::oneshot::Sender<IOResult<(HashMap<String, EndpointState>)>>,
     },
+    Stats {
+        response: tokio::sync::oneshot::Sender<IOResult<(Stats)>>,
+    },
+    ResetStats {
+        response: tokio::sync::oneshot::Sender<IOResult<()>>,
+    },
 }
 
 pub struct Engine {
     arguments:Arguments,
     contexts: Vec<Arc<Bsread>>,
     pools: Vec<Pool>,
-    event_receivers: Vec<crossbeam_channel::Receiver<EndpointEvent>>,
     endpoints:Vec<String>,
     handle: Handle,
     current: usize,
     connected:bool,
     processor: Arc<Processor>,
+    processed: Arc<AtomicU32>,
+    processing: Arc<AtomicU32>,
 }
 
 impl Engine {
@@ -51,12 +61,12 @@ impl Engine {
         let contexts = Vec::new();
         let pools = Vec::new();
         let endpoints = Vec::new();
-        let event_receivers = Vec::new();
 
         //let handle =  Handle::current().clone();
         //Creating a dedicated runtime instead of ?
         let processor = processor.clone();
-        let engine = Engine {arguments, contexts, event_receivers, endpoints, pools, handle, processor, current:0,connected: false};
+        let engine = Engine {arguments, contexts, endpoints, pools, handle, processor,
+            current:0,connected: false, processed: Arc::new(AtomicU32::new(0)), processing:Arc::new(AtomicU32::new(0))};
 
         //Cannot be async, ZMQ calls must be called from the same thread.
         //tokio::spawn(async move {
@@ -100,10 +110,19 @@ impl Engine {
                         let _ = response.send(Ok(engine.diags()));
                     }
 
-
                     EngineCommand::Status { response } => {
                         let _ = response.send(Ok(engine.status()));
                     }
+
+                    EngineCommand::Stats { response } => {
+                        let _ = response.send(Ok(engine.stats()));
+                    }
+
+                    EngineCommand::ResetStats { response } => {
+                        engine.reset_stats();
+                        let _ = response.send(Ok(()));
+                    }
+
                 }
             }
         });
@@ -120,7 +139,6 @@ impl Engine {
         }
         self.pools = Vec::new();
         self.contexts = Vec::new();
-        self.event_receivers = Vec::new();
         self.current = 0;
         self.connected = false;
         Ok(())
@@ -218,30 +236,66 @@ impl Engine {
     }
 
     fn add_pool(&mut self) -> IOResult<()>  {
-        //let callback = |msg| async move {
-        //}
-        let processor = self.processor.clone();
-        let callback = {
-            let processor = processor.clone();
-            move |msg: ReceivedMessage| {
-                let processor = processor.clone();
-                async move {
-                    processor.process(msg.endpoint, msg.message).await;
-                }
+        let processor = Arc::clone(&self.processor);
+        let processing = Arc::clone(&self.processing);
+        let processed = Arc::clone(&self.processed);
+
+        let callback = move |msg: ReceivedMessage| {
+            let processor = Arc::clone(&processor);
+            let processing = Arc::clone(&processing);
+            let processed = Arc::clone(&processed);
+
+            async move {
+                processing.fetch_add(1, Ordering::Relaxed);
+                processor.process(msg.endpoint, msg.message).await;
+                processing.fetch_sub(1, Ordering::Relaxed);
+                processed.fetch_add(1, Ordering::Relaxed);
             }
         };
 
         let context =  Bsread::new()?;
         let mut pool = context.pool(vec![], SocketType::PULL, ConnectionMode::Individual, self.receivers() )?;
+        pool.set_raw(true);
         let event_receiver = pool.enable_monitoring()?;
         //pool.connect()?;
+        let handle = self.handle.clone();
+        let processor = Arc::clone(&self.processor);
+
+        thread::spawn(move || {
+            loop {
+                match event_receiver.recv() {
+                    Ok(event) => {
+                        let processor = processor.clone();
+                        handle.spawn(async move {
+                            match event {
+                                EndpointEvent::State(endpoint, state) => {
+                                    processor.on_endpoint_state(endpoint, state).await;
+                                }
+                                EndpointEvent::Diagnostic(endpoint, diag, id) => {
+                                    processor.on_endpoint_diag(endpoint, diag, id).await;
+                                }
+                            }
+                        });
+                    }
+                    Err(err) => {
+                        log::error!("Error receiving monitor event, quitting receive thread: {:?}",err);
+                        break;
+                    }
+                }
+            }
+        });
+
 
         let handle = self.handle.clone();
-        pool.start_async(callback, self.arguments.concurrent, Some(handle),)?;
+        let execution = if self.arguments.concurrent {
+            AsyncExecution::Concurrent
+        } else {
+            AsyncExecution::Ordered { capacity: 100, blocking: false }
+        };
+        pool.start_async(callback, execution, Some(handle),)?;
 
         self.contexts.push(context);
         self.pools.push(pool);
-        self.event_receivers.push(event_receiver);
         self.current = self.current + 1;
         Ok(())
     }
@@ -274,6 +328,52 @@ impl Engine {
         endpoint_states
     }
 
+    fn stats(& self) -> Stats {
+        Stats {
+            received: self. messages(),
+            errors:  self.errors(),
+            dropped:  self.dropped(),
+            processing:self.processing(),
+            processed: self.processed(),
+        }
+    }
+
+    fn reset_stats(&mut self) {
+        for mut pool in self.pools.iter_mut() {
+            pool.reset_counters();
+        }
+        self.processing.store(0, Ordering::Relaxed);
+        self.processed.store(0, Ordering::Relaxed);
+    }
+
+    fn messages(&self) -> u32 {
+        self.pools
+            .iter()
+            .map(|r| r.messages())
+            .sum()
+    }
+
+    fn errors(&self) -> u32 {
+        self.pools
+            .iter()
+            .map(|r| r.errors())
+            .sum()
+    }
+
+    fn dropped(&self) -> u32 {
+        self.pools
+            .iter()
+            .map(|r| r.dropped())
+            .sum()
+    }
+
+    pub fn processing(&self) -> u32 {
+        self.processing.load(Ordering::Relaxed)
+    }
+
+    pub fn processed(&self) -> u32 {
+        self.processed.load(Ordering::Relaxed)
+    }
 }
 impl Drop for Engine {
     fn drop(&mut self) {

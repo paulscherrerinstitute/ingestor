@@ -7,7 +7,7 @@ use bsread::EndpointDiag;
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::{ RwLock};
-
+use crate::app::Stats;
 
 #[derive(Serialize)]
 pub struct Response {
@@ -86,6 +86,11 @@ async fn config(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Config>, App
     Ok(Json(app.config()))
 }
 
+async fn stats(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Stats>, AppError> {
+    let app = app.read().await;
+    Ok(Json(app.stats().await?))
+}
+
 async fn start(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
     let mut app = app.write().await;
     let status = app.start().await?;
@@ -98,9 +103,17 @@ async fn stop(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, App
     Ok(Response::ok())
 }
 
+//curl -X PUT --json @cfg.json http://localhost:15000/api/config
+//curl -X PUT --json '{"endpoints":["tcp://localhost:12000","tcp://localhost:12001"]}' http://localhost:15000/api/config
 async fn set_config(State(app): State<Arc<RwLock<App>>>,Json(config): Json<Config>,) -> Result<Json<Response>, AppError> {
     let mut app = app.write().await;
     app.set_config(config).await?;
+    Ok(Response::ok())
+}
+
+async fn reset_stats(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
+    let mut app = app.write().await;
+    let status = app.reset_stats().await?;
     Ok(Response::ok())
 }
 
@@ -111,8 +124,10 @@ pub fn init(app:Arc<RwLock<App>>) -> Router {
         .route("/api/status", get(status))
         .route("/api/diags", get(diags))
         .route("/api/config", get(config))
+        .route("/api/stats", get(stats))
         .route("/api/start", post(start))
         .route("/api/stop", post(stop))
+        .route("/api/reset_stats", post(reset_stats))
         .route("/api/config", put(set_config))
         .with_state(app);
     api
