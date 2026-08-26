@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::thread::Thread;
 use bsread::receiver::AsyncExecution;
-use crate::app::Stats;
+use crate::app::{Stats, App};
 use crate::api::AppError;
 use crate::processor::Processor;
 use crate::Arguments;
@@ -17,6 +17,8 @@ use tokio::sync::mpsc::Receiver;
 use crossbeam_channel;
 use crossbeam_channel::RecvError;
 use tokio::runtime::{Runtime, Handle};
+use sysinfo::{Pid, ProcessesToUpdate, System};
+
 
 pub enum EngineCommand {
     Start {
@@ -329,12 +331,15 @@ impl Engine {
     }
 
     fn stats(& self) -> Stats {
+        let (cpu, memory, files) = App::process_resources();
+        
         Stats {
             received: self. messages(),
             errors:  self.errors(),
             dropped:  self.dropped(),
             processing:self.processing(),
             processed: self.processed(),
+            cpu, memory, files,
         }
     }
 
@@ -367,13 +372,14 @@ impl Engine {
             .sum()
     }
 
-    pub fn processing(&self) -> u32 {
+    fn processing(&self) -> u32 {
         self.processing.load(Ordering::Relaxed)
     }
 
-    pub fn processed(&self) -> u32 {
+    fn processed(&self) -> u32 {
         self.processed.load(Ordering::Relaxed)
     }
+    
 }
 impl Drop for Engine {
     fn drop(&mut self) {

@@ -6,6 +6,7 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 use bsread::{Bsread, EndpointDiag, EndpointState, IOError, IOResult};
 use bsread::message::DECOMPRESSION_ERROR;
+use sysinfo::{Pid, ProcessesToUpdate, System};
 use crate::{engine, Arguments};
 use crate::Config;
 use tokio::sync::mpsc::{channel, Sender};
@@ -30,11 +31,14 @@ pub struct Status {
 
 #[derive(Serialize)]
 pub struct Stats {
-    pub  received: u32,
-    pub  errors: u32,
-    pub  dropped: u32,
-    pub  processing: u32,
-    pub  processed: u32,
+    pub received: u32,
+    pub errors: u32,
+    pub dropped: u32,
+    pub processing: u32,
+    pub processed: u32,
+    pub cpu:f32,
+    pub memory:u64,
+    pub files:usize,
 }
 
 pub struct App {
@@ -43,6 +47,7 @@ pub struct App {
     engine_tx: Sender<EngineCommand>,
     state:State,
 }
+
 
 impl App {
     pub fn new(arguments:Arguments) -> Self {
@@ -62,6 +67,21 @@ impl App {
         let processor = Arc::new(Processor::new());
         Engine::launch(arguments.clone(), engine_rx, handle.clone(), processor);
         App {arguments, config, engine_tx, state:State::Initializing}
+    }
+
+    pub fn process_resources() -> (f32, u64, usize) {
+        let mut system = System::new();
+        let pid = Pid::from_u32(std::process::id());
+        system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        if let Some(process) = system.process(pid) {
+            let open_files = system
+                .process(pid)
+                .and_then(|process| process.open_files())
+                .unwrap_or(0);
+            (process.cpu_usage(), process.memory(), open_files)
+        } else {
+            (0.0, 0, 0)
+        }
     }
 
     pub async fn set_config(&mut self, config: Config) -> IOResult<()> {
