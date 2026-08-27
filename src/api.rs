@@ -100,14 +100,14 @@ async fn stats(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Stats>, AppEr
 async fn start(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
     log::info!("API call: start");
     let mut app = app.write().await;
-    let status = app.start().await?;
+    app.start().await?;
     Ok(Response::ok())
 }
 
 async fn stop(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
     log::info!("API call: stop");
     let mut app = app.write().await;
-    let status = app.stop().await?;
+    app.stop().await?;
     Ok(Response::ok())
 }
 
