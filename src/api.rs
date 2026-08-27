@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use crate::{Arguments, Config};
-use crate::app::{App, Status};
+use crate::app::{App, Status, Stats};
 use axum::{extract::State, routing::get, routing::post, routing::put, Json, Router, http::StatusCode, response::{IntoResponse}, Error};
 use std::sync::Arc;
 use bsread::EndpointDiag;
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::{ RwLock};
-use crate::app::Stats;
+
 
 #[derive(Serialize)]
 pub struct Response {
@@ -62,42 +62,50 @@ impl From<std::io::Error> for AppError {
 }
 
 async fn args(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Arguments>, AppError> {
+    log::debug!("API call: args");
     let app = app.read().await;
     Ok(Json(app.arguments()))
 }
 
 async fn state(State(app):  State<Arc<RwLock<App>>>) -> Result<Json<crate::app::State>, AppError> {
+    log::debug!("API call: state");
     let app = app.read().await;
     Ok(Json(app.state()))
 }
 
 async fn status(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Status>, AppError> {
+    log::debug!("API call: status");
     let app = app.read().await;
     Ok(Json(app.status().await?))
 }
 
 async fn diags(State(app): State<Arc<RwLock<App>>>) -> Result<Json<HashMap<String, HashMap<EndpointDiag, u32>>>, AppError> {
+    log::debug!("API call: diags");
     let app = app.read().await;
     Ok(Json(app.diags().await?))
 }
 
 async fn config(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Config>, AppError> {
+    log::debug!("API call: config");
     let app = app.read().await;
     Ok(Json(app.config()))
 }
 
 async fn stats(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Stats>, AppError> {
+    log::debug!("API call: stats");
     let app = app.read().await;
     Ok(Json(app.stats().await?))
 }
 
 async fn start(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
+    log::info!("API call: start");
     let mut app = app.write().await;
     let status = app.start().await?;
     Ok(Response::ok())
 }
 
 async fn stop(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
+    log::info!("API call: stop");
     let mut app = app.write().await;
     let status = app.stop().await?;
     Ok(Response::ok())
@@ -106,12 +114,15 @@ async fn stop(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, App
 //curl -X PUT --json @cfg.json http://localhost:15000/api/config
 //curl -X PUT --json '{"endpoints":["tcp://localhost:12000","tcp://localhost:12001"]}' http://localhost:15000/api/config
 async fn set_config(State(app): State<Arc<RwLock<App>>>,Json(config): Json<Config>,) -> Result<Json<Response>, AppError> {
+    let s = 2;
+    log::info!("API call: set_config {:?}", config);
     let mut app = app.write().await;
     app.set_config(config).await?;
     Ok(Response::ok())
 }
 
 async fn reset_stats(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
+    log::info!("API call: reset_stats");
     let mut app = app.write().await;
     let status = app.reset_stats().await?;
     Ok(Response::ok())

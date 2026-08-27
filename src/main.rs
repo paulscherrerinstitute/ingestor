@@ -2,6 +2,7 @@ mod app;
 mod api;
 mod engine;
 mod processor;
+mod engine_client;
 
 use log;
 use clap::{Arg, Command};
@@ -30,7 +31,7 @@ pub struct Arguments {
     concurrent:bool,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     endpoints:Vec<String>,
 }

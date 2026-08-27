@@ -7,11 +7,14 @@ use std::sync::Arc;
 use bsread::{Bsread, EndpointDiag, EndpointState, IOError, IOResult};
 use bsread::message::DECOMPRESSION_ERROR;
 use sysinfo::{Pid, ProcessesToUpdate, System};
+use tokio::runtime::Handle;
 use crate::{engine, Arguments};
 use crate::Config;
 use tokio::sync::mpsc::{channel, Sender};
 use crate::engine::{Engine, EngineCommand};
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
+use crate::engine_client::EngineClient;
 use crate::processor::Processor;
 
 #[derive(Serialize, PartialEq, Clone)]
@@ -36,6 +39,10 @@ pub struct Stats {
     pub dropped: u32,
     pub processing: u32,
     pub processed: u32,
+    pub received_rate: f32,
+    pub errors_rate: f32,
+    pub dropped_rate: f32,
+    pub processed_rate: f32,
     pub cpu:f32,
     pub memory:u64,
     pub files:usize,
@@ -44,8 +51,9 @@ pub struct Stats {
 pub struct App {
     arguments:Arguments,
     config:Config,
-    engine_tx: Sender<EngineCommand>,
     state:State,
+    timer_handle: Option<JoinHandle<()>>,
+    engine_client: EngineClient,
 }
 
 
@@ -63,10 +71,10 @@ impl App {
             }
         }
         let handle = tokio::runtime::Handle::current();
-        let (engine_tx, mut engine_rx) = channel::<engine::EngineCommand>(32);
+        let (engine_client, engine_rx) = EngineClient::new();
         let processor = Arc::new(Processor::new());
-        Engine::launch(arguments.clone(), engine_rx, handle.clone(), processor);
-        App {arguments, config, engine_tx, state:State::Initializing}
+        Engine::launch(arguments.clone(), engine_rx, handle.clone(), processor.clone());
+        App {arguments, config, engine_client, state:State::Initializing, timer_handle: None}
     }
 
     pub fn process_resources() -> (f32, u64, usize) {
@@ -91,49 +99,38 @@ impl App {
                     log::error!("Error saving config to {}: {}", &config_path, e);
             }
         }
-        match self.send_config().await{
-            Ok(_) => {
-                Ok(())
-            }
-            Err(e) => {
-                Err(IOError::new(ErrorKind::Other, e))
-            }
-        }
+        self.engine_client.send_config(self.config.clone()).await
     }
 
     pub async fn stop(& mut self) -> IOResult<()> {
         log::info!("Stpping service");
-        match self.disconnect().await{
-            Ok(_) => {
-                self.state = State::Stopped;
-                Ok(())
-            }
-            Err(e) => {
-                Err(IOError::new(ErrorKind::ConnectionAborted, e))
-            }
+        if let Some(handle) = self.timer_handle.take() {
+            handle.abort();
+            self.timer_handle = None;
         }
+
+        self.engine_client.disconnect().await
     }
 
 
     pub async fn start(&mut self) -> IOResult<()> {
         if (!self.is_started()){
             log::info!("Starting service");
-            if let Err(e) =  self.send_config().await {
-                return Err(IOError::new(ErrorKind::Other, e));
-            }
-
-            match self.connect().await{
-                Ok(_) => {
-                    self.state = State::Started;
+            self.engine_client.send_config(self.config.clone()).await?;
+            self.engine_client.connect().await?;
+            let engine_client = self.engine_client.clone();
+            let timer_handle  = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(10));
+                loop {
+                    interval.tick().await;
+                    engine_client.on_timer().await;
                 }
-                Err(e) => {
-                    self.state = State::Error;
-                    return Err(IOError::new(ErrorKind::ConnectionAborted, e));
-                }
-            }
+            });
+            self.timer_handle = Some(timer_handle);
         }
         Ok(())
     }
+
 
     pub fn is_started(& self) -> bool {
         self.state == State::Started
@@ -156,49 +153,28 @@ impl App {
         self.config.clone()
     }
 
-    async fn send_command<T>(&self,command: impl FnOnce(oneshot::Sender<IOResult<T>>) -> EngineCommand,) -> IOResult<T> {
-        let (tx, rx) = oneshot::channel();
-        self.engine_tx.send(command(tx)).await
-            .map_err(|_| {IOError::new(ErrorKind::BrokenPipe,"Engine is not running",)})?;
-        rx.await.
-            map_err(|_| {IOError::new(ErrorKind::BrokenPipe,"Engine terminated",)})?
-    }
-
-    async fn connect(&mut self) -> IOResult<()> {
-        self.send_command(|response| EngineCommand::Start { response }).await
-    }
-
-    async fn disconnect(&self) -> IOResult<()> {
-        self.send_command(|response| EngineCommand::Stop { response }).await
-    }
-
-    async fn send_config(&self) -> IOResult<()> {
-        let config = self.config.clone();
-        self.send_command(|response| {EngineCommand::Config { config, response }}).await
-    }
 
     pub async fn status(&self) ->  IOResult<Status> {
-        let endpoints = self.send_command(|response| EngineCommand::Status { response })
-            .await?;
+        let endpoints = self.engine_client.status().await?;
         Ok(Status {state: self.state(),endpoints,})
     }
 
     pub async fn stats(&self) -> IOResult<Stats> {
-        self.send_command(|response| EngineCommand::Stats { response }).await
+        self.engine_client.stats().await
     }
 
     pub async fn diags(&self,) -> IOResult<HashMap<String, HashMap<EndpointDiag, u32>>> {
-        self.send_command(|response| EngineCommand::Diags { response }).await
+        self.engine_client.diags().await
     }
 
-    pub async fn reset_stats(&self) -> IOResult<()> {
-        self.send_command(|response| EngineCommand::ResetStats { response }).await
+    pub async fn reset_stats(&self,) -> IOResult<()> {
+        self.engine_client.reset_stats().await
     }
+
     pub fn close(&mut self) -> IOResult<()> {
         self.state = State::Closed;
         Ok(())
     }
-
 }
 impl Drop for App {
     fn drop(&mut self) {

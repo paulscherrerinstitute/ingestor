@@ -27,6 +27,9 @@ pub enum EngineCommand {
     Stop {
         response: tokio::sync::oneshot::Sender<IOResult<()>>,
     },
+    Timer {
+        response: tokio::sync::oneshot::Sender<IOResult<()>>,
+    },
     Config {
         config: Config,
         response: tokio::sync::oneshot::Sender<IOResult<()>>,
@@ -56,42 +59,27 @@ pub struct Engine {
     processor: Arc<Processor>,
     processed: Arc<AtomicU32>,
     processing: Arc<AtomicU32>,
+    last_stats: Option<Stats>,
 }
 
 impl Engine {
-    pub fn launch(arguments:Arguments, engine_rx:Receiver<EngineCommand>, handle:Handle, processor:Arc<Processor>) {
+
+    pub fn new(arguments:Arguments,  handle:Handle, processor:Arc<Processor>) -> Self{
         let contexts = Vec::new();
         let pools = Vec::new();
         let endpoints = Vec::new();
+        Engine {arguments, contexts, endpoints, pools, handle, processor,
+            current:0,connected: false, processed: Arc::new(AtomicU32::new(0)), processing:Arc::new(AtomicU32::new(0)), last_stats: None}
+    }
 
-        //let handle =  Handle::current().clone();
-        //Creating a dedicated runtime instead of ?
-        let processor = processor.clone();
-        let engine = Engine {arguments, contexts, endpoints, pools, handle, processor,
-            current:0,connected: false, processed: Arc::new(AtomicU32::new(0)), processing:Arc::new(AtomicU32::new(0))};
-
-        //Cannot be async, ZMQ calls must be called from the same thread.
-        //tokio::spawn(async move {
-        std::thread::spawn(move || {
+    pub fn launch(arguments:Arguments, engine_rx:Receiver<EngineCommand>, handle:Handle, processor:Arc<Processor>) {
+        let engine = Engine::new(arguments, handle, processor);
+        //std::thread::spawn(move || {
+        tokio::spawn(async move {
             let mut engine = engine;
             let mut engine_rx = engine_rx;
-            /*
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(4)
-                //.thread_name("async_carrier")
-                .thread_name_fn(|| {
-                    static ATOMIC_ID: AtomicUsize = AtomicUsize::new(0);
-                    let id = ATOMIC_ID.fetch_add(1, Ordering::SeqCst);
-                    format!("async_carrier-{}", id)
-                })
-                .enable_all()
-                .build()
-                .unwrap();
-            engine.handle = runtime.handle().clone();
-            */
-
-            //while let Some(command) = engine_rx.recv().await {
-            while let Some(command) = engine_rx.blocking_recv() {
+            while let Some(command) = engine_rx.recv().await {
+            //while let Some(command) = engine_rx.blocking_recv() {
                 match command {
                     EngineCommand::Start { response } => {
                         let result = engine.start();
@@ -101,6 +89,11 @@ impl Engine {
                     EngineCommand::Stop { response } => {
                         let result = engine.stop();
                         let _ = response.send(result);
+                    }
+
+                    EngineCommand::Timer { response } => {
+                        engine.on_timer();
+                        let _ = response.send(Ok(()));
                     }
 
                     EngineCommand::Config { config, response } => {
@@ -131,7 +124,7 @@ impl Engine {
     }
 
 
-    fn stop(& mut self) -> IOResult<()> {
+    pub fn stop(& mut self) -> IOResult<()> {
         //for (context, pool) in self.contexts.iter().zip(self.pools.iter()) {
         for mut pool in self.pools.iter_mut() {
             pool.disconnect();
@@ -146,7 +139,7 @@ impl Engine {
         Ok(())
     }
 
-    fn start(& mut self) -> IOResult<()> {
+    pub fn start(& mut self) -> IOResult<()> {
         self.stop();
         self.add_pool();
         self.current = 0;
@@ -157,7 +150,7 @@ impl Engine {
         Ok(())
     }
 
-    fn config(&mut self, config: Config) -> IOResult<()> {
+    pub fn config(&mut self, config: Config) -> IOResult<()> {
         if self.endpoints.len()==0{
             //Initial config
             self.endpoints = config.endpoints;
@@ -302,19 +295,19 @@ impl Engine {
         Ok(())
     }
 
-    fn pool_size(& self) -> usize {
+    pub fn pool_size(& self) -> usize {
         self.arguments.pool_size
     }
 
-    fn receivers(& self) -> usize {
+    pub fn receivers(& self) -> usize {
         self.arguments.receivers
     }
 
-    fn pools(& self) -> &Vec<Pool> {
+    pub fn pools(& self) -> &Vec<Pool> {
         &self.pools
     }
 
-    fn diags(& self) -> HashMap<String, HashMap<EndpointDiag, u32>>{
+    pub fn diags(& self) -> HashMap<String, HashMap<EndpointDiag, u32>>{
         let mut diagnostics = HashMap::new();
         for pool in self.pools.iter() {
             diagnostics.extend(pool.diagnostics());
@@ -322,7 +315,7 @@ impl Engine {
         diagnostics
     }
 
-    fn status(& self) -> HashMap<String, EndpointState> {
+    pub fn status(& self) -> HashMap<String, EndpointState> {
         let mut endpoint_states = HashMap::new();
         for pool in self.pools.iter() {
             endpoint_states.extend(pool.endpoint_states());
@@ -330,56 +323,82 @@ impl Engine {
         endpoint_states
     }
 
-    fn stats(& self) -> Stats {
+    pub fn stats(& self) -> Stats {
         let (cpu, memory, files) = App::process_resources();
-        
+
         Stats {
             received: self. messages(),
             errors:  self.errors(),
             dropped:  self.dropped(),
             processing:self.processing(),
             processed: self.processed(),
+            received_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.received_rate),
+            errors_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.errors_rate),
+            dropped_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.dropped_rate),
+            processed_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.processed_rate),
             cpu, memory, files,
         }
     }
 
-    fn reset_stats(&mut self) {
+    pub fn reset_stats(&mut self) {
         for mut pool in self.pools.iter_mut() {
             pool.reset_counters();
         }
-        self.processing.store(0, Ordering::Relaxed);
         self.processed.store(0, Ordering::Relaxed);
     }
 
-    fn messages(&self) -> u32 {
+    pub fn messages(&self) -> u32 {
         self.pools
             .iter()
             .map(|r| r.messages())
             .sum()
     }
 
-    fn errors(&self) -> u32 {
+    pub fn errors(&self) -> u32 {
         self.pools
             .iter()
             .map(|r| r.errors())
             .sum()
     }
 
-    fn dropped(&self) -> u32 {
+    pub fn dropped(&self) -> u32 {
         self.pools
             .iter()
             .map(|r| r.dropped())
             .sum()
     }
 
-    fn processing(&self) -> u32 {
+    pub fn processing(&self) -> u32 {
         self.processing.load(Ordering::Relaxed)
     }
 
-    fn processed(&self) -> u32 {
+    pub fn processed(&self) -> u32 {
         self.processed.load(Ordering::Relaxed)
     }
-    
+
+    //Every 10s
+    pub fn on_timer(&mut self)  {
+        let received = self. messages();
+        let errors =  self.errors();
+        let dropped =  self.dropped();
+        let processing =self.processing();
+        let processed = self.processed();
+
+        let (received_rate, errors_rate, dropped_rate, processed_rate) = if let Some(last_stats) = self.last_stats.as_ref() {
+            let new_received = if received < last_stats.received{received} else {received - last_stats.received};
+            let new_errors = if errors < last_stats.errors{errors} else {errors - last_stats.errors};
+            let new_dropped = if dropped < last_stats.dropped{dropped} else {dropped - last_stats.dropped};
+            let new_processed = if processed < last_stats.processed{processed} else {processed - last_stats.processed};
+            ((new_received as f32) / 10.0, (new_errors as f32) / 10.0, (new_dropped as f32) / 10.0, (new_processed as f32) / 10.0)
+        } else {
+            (0.0, 0.0, 0.0, 0.0)
+        };
+        self.last_stats = Some(Stats{
+            received,errors, dropped, processing, processed,
+            received_rate, errors_rate, dropped_rate, processed_rate,
+            cpu:0.0, memory:0, files:0
+        });
+    }
 }
 impl Drop for Engine {
     fn drop(&mut self) {

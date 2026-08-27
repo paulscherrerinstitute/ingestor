@@ -41,7 +41,7 @@ impl Processor {
             }
             last_ids.insert(endpoint.to_string(), id);
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        //tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
     pub async fn on_endpoint_state(&self, endpoint: String, state: EndpointState) {
