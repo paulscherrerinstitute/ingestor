@@ -19,9 +19,10 @@ use crate::processor::Processor;
 
 #[derive(Serialize, PartialEq, Clone)]
 pub enum State {
-    Initializing,
-    Stopped,
+    Starting,
     Started,
+    Stopping,
+    Stopped,
     Error,
     Closed,
 }
@@ -74,7 +75,7 @@ impl App {
         let (engine_client, engine_rx) = EngineClient::new();
         let processor = Arc::new(Processor::new());
         Engine::launch(arguments.clone(), engine_rx, handle.clone(), processor.clone());
-        App {arguments, config, engine_client, state:State::Initializing, timer_handle: None}
+        App {arguments, config, engine_client, state:State::Starting, timer_handle: None}
     }
 
     pub fn process_resources() -> (f32, u64, usize) {
@@ -104,20 +105,29 @@ impl App {
 
     pub async fn stop(& mut self) -> IOResult<()> {
         log::info!("Stpping service");
+        self.state = State::Stopping;
         if let Some(handle) = self.timer_handle.take() {
             handle.abort();
             self.timer_handle = None;
         }
-
-        self.engine_client.disconnect().await
+        self.engine_client.disconnect().await?;
+        self.state = State::Stopped;
+        Ok(())
     }
 
 
     pub async fn start(&mut self) -> IOResult<()> {
         if (!self.is_started()){
             log::info!("Starting service");
-            self.engine_client.send_config(self.config.clone()).await?;
-            self.engine_client.connect().await?;
+            self.state = State::Starting;
+            self.engine_client.send_config(self.config.clone()).await.inspect_err(|e| {
+                log::error!("Error sending config:g in application startup {:?}", e);
+                self.state = State::Error;
+            })?;
+            self.engine_client.connect().await.inspect_err(|e| {
+                log::error!("Error connecting in application startup: {:?}", e);
+                self.state = State::Error;
+            })?;
             let engine_client = self.engine_client.clone();
             let timer_handle  = tokio::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(10));
@@ -127,6 +137,7 @@ impl App {
                 }
             });
             self.timer_handle = Some(timer_handle);
+            self.state = State::Started;
         }
         Ok(())
     }

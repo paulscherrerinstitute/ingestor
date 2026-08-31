@@ -29,6 +29,7 @@ pub struct Arguments {
     config_path:Option<String>,
     auto_start:bool,
     concurrent:bool,
+    disable_handshake:bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -132,6 +133,13 @@ async fn main() {
                 .help("Does not order sequentially messages from each endpoint")
                 .num_args(0), // Does not take a value
         )
+        .arg(
+            Arg::new("DisableHandshake")
+                .short('k')
+                .long("disable-handshake")
+                .help("Disable handshake check")
+                .num_args(0), // Does not take a value
+        )
 
         .get_matches();
 
@@ -196,7 +204,13 @@ async fn main() {
         false
     };
 
-    let arguments = Arguments{ pool_size, receivers, debug, config_path, auto_start, concurrent};
+    let disable_handshake = if matches.get_flag("DisableHandshake") {
+        true
+    }   else {
+        false
+    };
+
+    let arguments = Arguments{ pool_size, receivers, debug, config_path, auto_start, concurrent, disable_handshake};
     let app = App::new(arguments.clone());
     let mut app = Arc::new(RwLock::new(app));
     let api = api::init(app.clone());

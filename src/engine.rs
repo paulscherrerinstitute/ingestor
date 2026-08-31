@@ -2,7 +2,7 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Message, Pool, ReceivedMessage, SocketType};
+use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Message, Pool, ReceivedMessage, SocketConfig, SocketType};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -18,6 +18,7 @@ use crossbeam_channel;
 use crossbeam_channel::RecvError;
 use tokio::runtime::{Runtime, Handle};
 use sysinfo::{Pid, ProcessesToUpdate, System};
+use futures::future::join_all;
 
 
 pub enum EngineCommand {
@@ -147,6 +148,9 @@ impl Engine {
         for endpoint in self.endpoints.clone() {
             self.try_connect_endpoint(&endpoint);
         }
+        //let futures = self.endpoints.clone().into_iter()
+        //    .map(|endpoint| self.try_connect_endpoint(&endpoint));
+        //join_all(futures).await;
         Ok(())
     }
 
@@ -251,6 +255,10 @@ impl Engine {
         let context =  Bsread::new()?;
         let mut pool = context.pool(vec![], SocketType::PULL, ConnectionMode::Individual, self.receivers() )?;
         pool.set_raw(true);
+        if let Err(err) = self.set_zmq_options(&mut pool){
+            log::error!("Error setting zmq options {}", err);
+        }
+
         let event_receiver = pool.enable_monitoring()?;
         //pool.connect()?;
         let handle = self.handle.clone();
@@ -292,6 +300,17 @@ impl Engine {
         self.contexts.push(context);
         self.pools.push(pool);
         self.current = self.current + 1;
+        Ok(())
+    }
+
+    fn set_zmq_options(&self, pool: &mut Pool) -> IOResult<()> {
+        pool.set_rcvhwm(1000)?;
+        pool.set_linger(0)?;
+        pool.set_keepalive(30, 10, 3)?;
+        pool.set_heartbeat(10_000, 30_000, 30_000)?;
+        if self.arguments.disable_handshake {
+            pool.set_handshake_ivl(0);
+        }
         Ok(())
     }
 
