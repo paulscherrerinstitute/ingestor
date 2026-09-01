@@ -14,6 +14,7 @@ use tokio::sync::mpsc::{channel, Sender};
 use crate::engine::{Engine, EngineCommand};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+use crate::channel_processor::ChannelProcessor;
 use crate::engine_client::EngineClient;
 use crate::processor::Processor;
 
@@ -73,7 +74,8 @@ impl App {
         }
         let handle = tokio::runtime::Handle::current();
         let (engine_client, engine_rx) = EngineClient::new();
-        let processor = Arc::new(Processor::new(arguments.clone()));
+        let channel_processor = Arc::new(ChannelProcessor::new(arguments.clone()));
+        let processor = Arc::new(Processor::new(arguments.clone(), channel_processor));
         Engine::launch(arguments.clone(), engine_rx, handle.clone(), processor.clone());
         App {arguments, config, engine_client, state:State::Starting, timer_handle: None}
     }

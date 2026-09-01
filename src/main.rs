@@ -3,6 +3,7 @@ mod api;
 mod engine;
 mod processor;
 mod engine_client;
+mod channel_processor;
 
 use log;
 use clap::{Arg, Command};

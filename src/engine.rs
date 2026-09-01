@@ -50,6 +50,11 @@ pub enum EngineCommand {
     },
 }
 
+struct ProcessingStats {
+    processing: AtomicU32,
+    processed: AtomicU32,
+}
+
 pub struct Engine {
     arguments:Arguments,
     contexts: Vec<Arc<Bsread>>,
@@ -59,8 +64,7 @@ pub struct Engine {
     current: usize,
     connected:bool,
     processor: Arc<Processor>,
-    processed: Arc<AtomicU32>,
-    processing: Arc<AtomicU32>,
+    processing_stats: Arc<ProcessingStats>,
     last_stats: Option<Stats>,
 }
 
@@ -71,7 +75,11 @@ impl Engine {
         let pools = Vec::new();
         let endpoints = Vec::new();
         Engine {arguments, contexts, endpoints, pools, handle, processor,
-            current:0,connected: false, processed: Arc::new(AtomicU32::new(0)), processing:Arc::new(AtomicU32::new(0)), last_stats: None}
+            current:0,
+            connected: false,
+            processing_stats: Arc::new(ProcessingStats{ processing: AtomicU32::new(0), processed: AtomicU32::new(0) }),
+            last_stats: None
+        }
     }
 
     pub fn launch(arguments:Arguments, engine_rx:Receiver<EngineCommand>, handle:Handle, processor:Arc<Processor>) {
@@ -256,19 +264,17 @@ impl Engine {
 
     fn add_pool(&mut self) -> IOResult<()>  {
         let processor = Arc::clone(&self.processor);
-        let processing = Arc::clone(&self.processing);
-        let processed = Arc::clone(&self.processed);
+        let processing_stats = Arc::clone(&self.processing_stats);
 
         let callback = move |msg: ReceivedMessage| {
             let processor = Arc::clone(&processor);
-            let processing = Arc::clone(&processing);
-            let processed = Arc::clone(&processed);
+            let processing_stats = Arc::clone(&processing_stats);
 
             async move {
-                processing.fetch_add(1, Ordering::Relaxed);
+                processing_stats.processing.fetch_add(1, Ordering::Relaxed);
                 processor.process(msg.endpoint, msg.message).await;
-                processing.fetch_sub(1, Ordering::Relaxed);
-                processed.fetch_add(1, Ordering::Relaxed);
+                processing_stats.processing.fetch_sub(1, Ordering::Relaxed);
+                processing_stats.processed.fetch_add(1, Ordering::Relaxed);
             }
         };
 
@@ -384,7 +390,8 @@ impl Engine {
         for mut pool in self.pools.iter_mut() {
             pool.reset_counters();
         }
-        self.processed.store(0, Ordering::Relaxed);
+        self.processing_stats.processed.store(0, Ordering::Relaxed);
+        self.processing_stats.processing.store(0, Ordering::Relaxed);
     }
 
     pub fn messages(&self) -> u32 {
@@ -409,11 +416,11 @@ impl Engine {
     }
 
     pub fn processing(&self) -> u32 {
-        self.processing.load(Ordering::Relaxed)
+        self.processing_stats.processing.load(Ordering::Relaxed)
     }
 
     pub fn processed(&self) -> u32 {
-        self.processed.load(Ordering::Relaxed)
+        self.processing_stats.processed.load(Ordering::Relaxed)
     }
 
     //Every 10s
