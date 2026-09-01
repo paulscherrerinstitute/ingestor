@@ -41,17 +41,27 @@ impl Processor {
             //    self.process_channel(id,tm,channel.into_config(),value,header_changed,).await;
             //}
 
+
             if self.arguments.join_channels {
                 let futures = channels.into_iter().zip(data)
-                    .map(|(channel, (_key, value))| {
-                        self.channel_processor.process(id, tm, channel.into_config(), value, header_changed)
+                    .filter_map(|(channel, (_key, value))| {
+                        let config = channel.into_config();
+                        match Self::as_bytes(&config, value) {
+                            Ok(data) => Some(
+                                self.channel_processor.process(id, tm, config, data,header_changed,)
+                            ),
+                            Err(err) => {None}
+                        }
                     });
                 join_all(futures).await;
             } else {
                 for (channel, (_key, value)) in channels.into_iter().zip(data) {
                     let channel_processor = Arc::clone(&self.channel_processor);
                     tokio::spawn(async move {
-                        channel_processor.process(id,tm,channel.into_config(),value,header_changed).await;
+                        let config = channel.into_config();
+                        if let Ok(data) = Self::as_bytes(&config, value) {
+                            channel_processor.process(id, tm, config, data, header_changed).await;
+                        }
                     });
                 }
             }
@@ -68,7 +78,6 @@ impl Processor {
         let last_id = last_ids.get(endpoint.as_str()).unwrap_or(&(0)).clone();
         if last_id > 0 {
             if last_id >= id {
-                log::error!("Received unordered message for {:?} last: {:?}, id: {}", endpoint, last_id, id);
                 return Err(IOError::new(ErrorKind::Other, format!("Received unordered message for {:?} last: {:?}, id: {}", endpoint, last_id, id)));
             } else if id != last_id + 1 {
                 log::warn!("Missed ID from  {:?} last: {:?}, id: {}", endpoint, last_id, id);
@@ -76,6 +85,25 @@ impl Processor {
         }
   last_ids.insert(endpoint.to_string(), id);
         Ok(())
+    }
+
+    fn as_bytes(config: &ChannelConfig, data: Option<ChannelData>) -> IOResult<Option<Vec<u8>>> {
+         match data {
+            Some(data) => match data.into_value().into_bytes() {
+                Some(arr) => {
+                    if arr.len() != config.size() {
+                        if config.kind() != "string" { //What to do for variable-lenght strings?
+                            return Err(IOError::new(ErrorKind::Other, format!("Channel {} data lenght {} is different from configuration size {}", config.name(), arr.len(), config.size())));
+                        }
+                    }
+                    Ok(Some(arr))
+                },
+                None => {
+                    Err(IOError::new(ErrorKind::Other, format!("Channel {} data is not u8 array: {} raw={}", config.name(), config.kind(), config.is_raw())))
+                }
+            },
+            None => Ok(None)
+        }
     }
 
     pub async fn on_endpoint_state(&self, endpoint: String, state: EndpointState) {

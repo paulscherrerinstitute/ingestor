@@ -10,54 +10,42 @@ use std::fs;
 
 pub struct ChannelProcessor {
     arguments:Arguments,
-    data_path: PathBuf,
 }
 
 
 impl ChannelProcessor {
     pub fn new(arguments:Arguments) -> Self {
-        Self {
-            arguments,
-            data_path: PathBuf::from(std::env::var("HOME").unwrap()).join("data"),
+        Self {arguments}
+    }
+
+    pub async fn process(&self, id: u64, tm: (u64, u64), config: ChannelConfig, data: Option<Vec<u8>>, header_changed: bool) {
+        if self.arguments.debug {
+            Self::print_channel(id, tm, config.name(), &data, config.kind(), config.shape(), config.size());
+        }
+        if let Some(path) = &self.arguments.output_path {
+            Self::save_channel(path, id, tm, config.name(), &data, config.kind(), config.shape(), config.size());
         }
     }
 
-    pub async fn process(&self, id: u64, tm: (u64, u64), config: ChannelConfig, data: Option<ChannelData>, header_changed: bool) {
-        let arr = match data {
-            Some(data) => match data.into_value().into_bytes() {
-                Some(arr) => {
-                    if arr.len() != config.size() {
-                        if config.kind() != "string" { //What to do for variable-lenght strings?
-                            log::error!("Channel {} data lenght {} is different from configuration size {}", config.name(), arr.len(), config.size());
-                            self.print_channel(id, tm, config.name(), Some(arr), config.kind(), config.shape(), config.size());
-                            return;
-                        }
-                    }
-                    Some(arr)
-                },
-                None => {
-                    log::error!("Channel {} data is not u8 array: {} raw={}", config.name(), config.kind(), config.is_raw());
-                    return;
-                }
-            },
-            None => None,
-        };
-        self.save_channel(id, tm, config.name(), arr, config.kind(), config.shape(), config.size());
-    }
 
-    pub fn print_channel(&self, id: u64, tm: (u64, u64), name:String, data:Option<Vec<u8>>, kind:String, shape:Option<Vec<u32>>, size:usize) {
+    fn print_channel(id: u64, tm: (u64, u64), name:String, data:&Option<Vec<u8>>, kind:String, shape:Option<Vec<u32>>, size:usize) {
         println!("Channel {} id:{} data:{:?} type:{} shape:{:?} size:{}", name, id, data, kind, shape, size);
     }
-    pub fn save_channel(&self, id: u64, tm: (u64, u64), name:String, data:Option<Vec<u8>>, kind:String, shape:Option<Vec<u32>>, size:usize) {
-        let filename = format!("{}.bin",  Local::now().format("%Y%m%d").to_string());
-        let path = self.data_path.join(&name).join(size.to_string()).join(filename);
 
-        if let Err(err) = self.append_record(path, id, tm, data, size){
+    fn save_channel(path: &String, id: u64, tm: (u64, u64), name:String, data:&Option<Vec<u8>>, kind:String, shape:Option<Vec<u32>>, size:usize) {
+        let path = if let Some(rest) = path.strip_prefix("~/") {
+            PathBuf::from(std::env::var("HOME").unwrap()).join(rest)
+        } else {
+            PathBuf::from(path)
+        };
+        let filename = format!("{}.bin", Local::now().format("%Y%m%d").to_string());
+        let path = path.join(&name).join(size.to_string()).join(filename);
+        if let Err(err) = Self::append_record(path, id, tm, data, size) {
             log::error!("Failed to save channel {} id {}: {}", name, id, err);
         }
     }
 
-    fn append_record(&self, path:PathBuf, id: u64, tm: (u64, u64), data:Option<Vec<u8>>, size:usize) -> io::Result<()> {
+    fn append_record(path:PathBuf, id: u64, tm: (u64, u64), data:&Option<Vec<u8>>, size:usize) -> io::Result<()> {
         //println!("Appending record for {:?} id:{} data:{:?}", path, id, data);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;

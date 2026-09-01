@@ -28,6 +28,7 @@ pub struct Arguments {
     receivers: usize,
     debug:bool,
     config_path:Option<String>,
+    output_path:Option<String>,
     auto_start:bool,
     concurrent:bool,
     disable_handshake:bool,
@@ -123,6 +124,14 @@ async fn main() {
                 .required(false),
         )
         .arg(
+            Arg::new("OutputPath")
+                .short('o')
+                .long("output")
+                .help("Data output path")
+                .num_args(1) // Expects one value
+                .required(false),
+        )
+        .arg(
             Arg::new("AutoStart")
                 .short('a')
                 .long("auto")
@@ -203,6 +212,8 @@ async fn main() {
 
     let config_path= matches.get_one::<String>("ConfigPath").cloned();
 
+    let output_path= matches.get_one::<String>("OutputPath").cloned();
+
     let debug = if matches.get_flag("Debug") {
         true
     }   else {
@@ -239,7 +250,8 @@ async fn main() {
         true
     };
 
-    let arguments = Arguments{ pool_size, receivers, debug, config_path, auto_start, concurrent, join_channels, disable_handshake, blocking_config};
+    let arguments = Arguments{ pool_size, receivers, debug, config_path, output_path,
+        auto_start, concurrent, join_channels, disable_handshake, blocking_config};
     let app = App::new(arguments.clone());
     let mut app = Arc::new(RwLock::new(app));
     let api = api::init(app.clone());
