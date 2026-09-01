@@ -51,7 +51,7 @@ impl EngineClient {
         self.send_command(|response| EngineCommand::ResetStats { response }).await
     }
 
-    pub async fn status(&self) ->  IOResult<HashMap<String, EndpointState>> {
+    pub async fn status(&self) ->  IOResult<Status> {
         self.send_command(|response| EngineCommand::Status { response }).await
     }
 

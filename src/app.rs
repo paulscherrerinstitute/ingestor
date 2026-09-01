@@ -30,8 +30,13 @@ pub enum State {
 
 #[derive(Serialize)]
 pub struct Status {
-    state: State,
     endpoints: HashMap<String, EndpointState>
+}
+
+impl Status {
+    pub fn new(endpoints: HashMap<String, EndpointState>) -> Self {
+        Self{endpoints}
+    }
 }
 
 #[derive(Serialize)]
@@ -49,6 +54,7 @@ pub struct Stats {
     pub memory:u64,
     pub files:usize,
 }
+
 
 pub struct App {
     arguments:Arguments,
@@ -167,10 +173,7 @@ impl App {
     }
 
 
-    pub async fn status(&self) ->  IOResult<Status> {
-        let endpoints = self.engine_client.status().await?;
-        Ok(Status {state: self.state(),endpoints,})
-    }
+    pub async fn status(&self) ->  IOResult<Status>  { self.engine_client.status().await }
 
     pub async fn stats(&self) -> IOResult<Stats> {
         self.engine_client.stats().await

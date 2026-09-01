@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::thread::Thread;
 use bsread::receiver::AsyncExecution;
-use crate::app::{Stats, App};
+use crate::app::{Stats, App, Status};
 use crate::api::AppError;
 use crate::processor::Processor;
 use crate::Arguments;
@@ -40,7 +40,7 @@ pub enum EngineCommand {
         response: tokio::sync::oneshot::Sender<IOResult<(HashMap<String, HashMap<EndpointDiag, u32>>)>>,
     },
     Status {
-        response: tokio::sync::oneshot::Sender<IOResult<(HashMap<String, EndpointState>)>>,
+        response: tokio::sync::oneshot::Sender<IOResult<(Status)>>,
     },
     Stats {
         response: tokio::sync::oneshot::Sender<IOResult<(Stats)>>,
@@ -320,7 +320,7 @@ impl Engine {
         let execution = if self.arguments.concurrent {
             AsyncExecution::Concurrent
         } else {
-            AsyncExecution::Ordered { capacity: 100, blocking: false }
+            AsyncExecution::Ordered { capacity: self.arguments.buffer_size, blocking: false }
         };
         pool.start_async(callback, execution, Some(handle),)?;
 
@@ -331,7 +331,7 @@ impl Engine {
     }
 
     fn set_zmq_options(&self, pool: &mut Pool) -> IOResult<()> {
-        pool.set_rcvhwm(1000)?;
+        pool.set_rcvhwm(self.arguments.receive_hwm)?;
         pool.set_linger(0)?;
         pool.set_keepalive(30, 10, 3)?;
         pool.set_heartbeat(10_000, 30_000, 30_000)?;
@@ -361,12 +361,12 @@ impl Engine {
         diagnostics
     }
 
-    pub fn status(& self) -> HashMap<String, EndpointState> {
+    pub fn status(& self) -> Status {
         let mut endpoint_states = HashMap::new();
         for pool in self.pools.iter() {
             endpoint_states.extend(pool.endpoint_states());
         }
-        endpoint_states
+        Status::new(endpoint_states)
     }
 
     pub fn stats(& self) -> Stats {

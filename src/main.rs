@@ -31,6 +31,8 @@ pub struct Arguments {
     output_path:Option<String>,
     auto_start:bool,
     concurrent:bool,
+    buffer_size: usize,
+    receive_hwm: i32,
     disable_handshake:bool,
     join_channels:bool,
     blocking_config:bool,
@@ -146,6 +148,14 @@ async fn main() {
                 .num_args(0), // Does not take a value
         )
         .arg(
+            Arg::new("BufferSize")
+                .short('b')
+                .long("buffer-size")
+                .help("Endpoint buffer size, if not concurrent (default=100)")
+                .num_args(1) // Expects one value
+                .required(false),
+        )
+        .arg(
             Arg::new("JoinChannels")
                 .short('j')
                 .long("join-channels")
@@ -166,7 +176,14 @@ async fn main() {
                 .help("Disable handshake check")
                 .num_args(0), // Does not take a value
         )
-
+        .arg(
+            Arg::new("ReceiveHwm")
+                .short('w')
+                .long("receive-hwm")
+                .help("Receive High Water Mark  (default=1000)")
+                .num_args(1) // Expects one value
+                .required(false),
+        )
         .get_matches();
 
     // Check if the help flag is present
@@ -232,6 +249,24 @@ async fn main() {
         false
     };
 
+    let buffer_size =if let Some(text) = matches.get_one::<String>("BufferSize") {
+        match text.parse::<usize>() {
+            Ok(number) => number,
+            Err(_) => {exit!("Invalid buffer size value: {}", text);},
+        }
+    } else {
+        100
+    };
+
+    let receive_hwm =if let Some(text) = matches.get_one::<String>("ReceiveHwm") {
+        match text.parse::<i32>() {
+            Ok(number) => number,
+            Err(_) => {exit!("Invalid receive high water mark value: {}", text);},
+        }
+    } else {
+        100
+    };
+
     let join_channels = if matches.get_flag("JoinChannels") {
         true
     }   else {
@@ -250,8 +285,8 @@ async fn main() {
         true
     };
 
-    let arguments = Arguments{ pool_size, receivers, debug, config_path, output_path,
-        auto_start, concurrent, join_channels, disable_handshake, blocking_config};
+    let arguments = Arguments{ pool_size, receivers, debug, config_path, output_path, receive_hwm,
+        auto_start, concurrent, buffer_size, join_channels, disable_handshake, blocking_config};
     let app = App::new(arguments.clone());
     let mut app = Arc::new(RwLock::new(app));
     let api = api::init(app.clone());

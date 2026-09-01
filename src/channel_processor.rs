@@ -27,7 +27,7 @@ impl ChannelProcessor {
         }
     }
 
-
+ 
     fn print_channel(id: u64, tm: (u64, u64), name:String, data:&Option<Vec<u8>>, kind:String, shape:Option<Vec<u32>>, size:usize) {
         println!("Channel {} id:{} data:{:?} type:{} shape:{:?} size:{}", name, id, data, kind, shape, size);
     }
