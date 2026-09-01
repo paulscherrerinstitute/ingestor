@@ -17,20 +17,22 @@ use chrono::Local;
 use std::fs;
 
 pub struct Processor {
+    arguments:Arguments,
     last_ids:Arc<Mutex<HashMap<String, u64>>>,
     data_path: PathBuf,
 }
 
 
 impl Processor {
-    pub fn new() -> Self {
+    pub fn new(arguments:Arguments) -> Self {
         Self {
+            arguments,
             last_ids: Arc::new(Mutex::new(HashMap::new())),
-            data_path: PathBuf::from(std::env::var("HOME").unwrap()).join("data"),
+            data_path: PathBuf::from(std::env::var("HOME").unwrap()).join("data")
         }
     }
 
-    pub async fn process(&self, endpoint: Option<String>, message: Message) {
+    pub async fn process(self:&Arc<Self>, endpoint: Option<String>, message: Message){
         //Limit scope of mutex, so tokio::time::sleep, othewise future needs to be Future<Output = ()> + Send + 'static
         if let Err(err) = self.check_msg(&endpoint, &message){
             log::error!("Message check failed: {}", err);
@@ -46,12 +48,24 @@ impl Processor {
             //    self.process_channel(id,tm,channel.into_config(),value,header_changed,).await;
             //}
 
-            let futures = channels.into_iter().zip(data)
+            if self.arguments.join_channels {
+                let futures = channels.into_iter().zip(data)
+                    .map(|(channel, (_key, value))| {
+                        self.process_channel(id, tm, channel.into_config(), value, header_changed)
+                    });
+                join_all(futures).await;
+            } else {
+                let futures = channels.into_iter().zip(data)
                 .map(|(channel, (_key, value))| {
-                    self.process_channel(id, tm, channel.into_config(), value, header_changed)
+                    let processor = Arc::clone(&self);
+                    async move {
+                        processor.process_channel(id,tm,channel.into_config(),value,header_changed,).await;
+                    }
                 });
-
-            join_all(futures).await;
+                for future in futures {
+                    tokio::spawn(future);
+                }
+            }
         }
         //tokio::time::sleep(Duration::from_millis(500)).await;
     }
@@ -76,7 +90,7 @@ impl Processor {
             },
             None => None,
         };
-        //self.save_channel(id, tm, config.name(), arr, config.kind(), config.shape(), config.size());
+        self.save_channel(id, tm, config.name(), arr, config.kind(), config.shape(), config.size());
     }
 
     pub fn print_channel(&self, id: u64, tm: (u64, u64), name:String, data:Option<Vec<u8>>, kind:String, shape:Option<Vec<u32>>, size:usize) {

@@ -19,6 +19,7 @@ use crossbeam_channel::RecvError;
 use tokio::runtime::{Runtime, Handle};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use futures::future::join_all;
+use std::time::Instant;
 
 
 pub enum EngineCommand {
@@ -126,6 +127,7 @@ impl Engine {
 
 
     pub fn stop(& mut self) -> IOResult<()> {
+        let start = Instant::now();
         //for (context, pool) in self.contexts.iter().zip(self.pools.iter()) {
         for mut pool in self.pools.iter_mut() {
             pool.disconnect();
@@ -137,10 +139,13 @@ impl Engine {
         self.contexts = Vec::new();
         self.current = 0;
         self.connected = false;
+        log::info!("Stopped in {:?}", start.elapsed());
         Ok(())
     }
 
     pub fn start(& mut self) -> IOResult<()> {
+        let start = Instant::now();
+
         self.stop();
         self.add_pool();
         self.current = 0;
@@ -148,9 +153,18 @@ impl Engine {
         for endpoint in self.endpoints.clone() {
             self.try_connect_endpoint(&endpoint);
         }
+
+        //for i in 1000..1200{
+        //    self.try_connect_endpoint(&format!("tcp://129.129.66.28:{}", i));
+        //}
+        //for i in 10..210{
+        //    self.try_connect_endpoint(&format!("tcp://129.129.66.{}:1000", i));
+        //}
+
         //let futures = self.endpoints.clone().into_iter()
         //    .map(|endpoint| self.try_connect_endpoint(&endpoint));
         //join_all(futures).await;
+        log::info!("Started in {:?}", start.elapsed());
         Ok(())
     }
 
@@ -162,6 +176,7 @@ impl Engine {
                 self.start()?;
             }
         } else {
+            let start = Instant::now();
             //Incremental config
             //remove duplicates
             let mut endpoints = config.endpoints;
@@ -188,6 +203,7 @@ impl Engine {
                 self.try_connect_endpoint(&endpoint);
             }
             self.endpoints = endpoints;
+            log::info!("Reconfigured in {:?}", start.elapsed());
         }
         Ok(())
     }
@@ -225,9 +241,13 @@ impl Engine {
     }
 
     fn try_connect_endpoint(&mut self, endpoint: &String) {
+        let start = Instant::now();
+
         if let Err(e) = self.connect_endpoint(&endpoint) {
             log::error!("Error connecting to endpoint {}: {:?}", endpoint, e);
         }
+
+        log::info!("Connecting to {} took {:?}", endpoint, start.elapsed());
     }
 
     fn current(& mut self) -> &mut Pool {
@@ -255,6 +275,7 @@ impl Engine {
         let context =  Bsread::new()?;
         let mut pool = context.pool(vec![], SocketType::PULL, ConnectionMode::Individual, self.receivers() )?;
         pool.set_raw(true);
+        pool.set_blocking_config(self.arguments.blocking_config);
         if let Err(err) = self.set_zmq_options(&mut pool){
             log::error!("Error setting zmq options {}", err);
         }

@@ -73,7 +73,7 @@ impl App {
         }
         let handle = tokio::runtime::Handle::current();
         let (engine_client, engine_rx) = EngineClient::new();
-        let processor = Arc::new(Processor::new());
+        let processor = Arc::new(Processor::new(arguments.clone()));
         Engine::launch(arguments.clone(), engine_rx, handle.clone(), processor.clone());
         App {arguments, config, engine_client, state:State::Starting, timer_handle: None}
     }

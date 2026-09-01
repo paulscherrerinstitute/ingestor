@@ -30,6 +30,8 @@ pub struct Arguments {
     auto_start:bool,
     concurrent:bool,
     disable_handshake:bool,
+    join_channels:bool,
+    blocking_config:bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -134,6 +136,20 @@ async fn main() {
                 .num_args(0), // Does not take a value
         )
         .arg(
+            Arg::new("JoinChannels")
+                .short('j')
+                .long("join-channels")
+                .help("Synchronize ingestion of all channels in a message before processing next")
+                .num_args(0), // Does not take a value
+        )
+        .arg(
+            Arg::new("UnblockingConfig")
+                .short('u')
+                .long("unblocking-config")
+                .help("Configuration commands are not blocking")
+                .num_args(0), // Does not take a value
+        )
+        .arg(
             Arg::new("DisableHandshake")
                 .short('k')
                 .long("disable-handshake")
@@ -204,13 +220,25 @@ async fn main() {
         false
     };
 
+    let join_channels = if matches.get_flag("JoinChannels") {
+        true
+    }   else {
+        false
+    };
+
     let disable_handshake = if matches.get_flag("DisableHandshake") {
         true
     }   else {
         false
     };
 
-    let arguments = Arguments{ pool_size, receivers, debug, config_path, auto_start, concurrent, disable_handshake};
+    let blocking_config = if matches.get_flag("UnblockingConfig") {
+        false
+    }   else {
+        true
+    };
+
+    let arguments = Arguments{ pool_size, receivers, debug, config_path, auto_start, concurrent, join_channels, disable_handshake, blocking_config};
     let app = App::new(arguments.clone());
     let mut app = Arc::new(RwLock::new(app));
     let api = api::init(app.clone());
