@@ -4,12 +4,11 @@ use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::sync::Arc;
-use bsread::{Bsread, EndpointDiag, EndpointState, IOError, IOResult};
+use bsread::{Bsread, EndpointDiag, EndpointState, IOError, IOResult, SocketType};
 use bsread::message::DECOMPRESSION_ERROR;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::runtime::Handle;
 use crate::{engine, Arguments};
-use crate::Config;
 use tokio::sync::mpsc::{channel, Sender};
 use crate::engine::{Engine, EngineCommand};
 use tokio::sync::oneshot;
@@ -17,6 +16,55 @@ use tokio::task::JoinHandle;
 use crate::channel_processor::ChannelProcessor;
 use crate::engine_client::EngineClient;
 use crate::processor::Processor;
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Config {
+    pub sources: Vec<Source>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum SocketKind {
+    PUB,
+    PUSH,
+    PULL,
+    SUB,
+}
+
+impl From<SocketKind> for SocketType {
+    fn from(socket_type: SocketKind) -> Self {
+        match socket_type {
+            SocketKind::PUB => SocketType::PUB,
+            SocketKind::PUSH => SocketType::PUSH,
+            SocketKind::PULL => SocketType::PULL,
+            SocketKind::SUB => SocketType::SUB,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Source {
+    pub address: String,
+    #[serde(rename = "type")]
+    pub socket_type: Option<SocketKind>,
+}
+
+impl Config {
+    pub fn update(&mut self, sources:Vec<Source>)  {
+        self.sources = sources.clone();
+    }
+    pub fn load(path: &str) -> IOResult<Self> {
+        let json =std::fs::read_to_string("config.json")?;
+        let config: Config = serde_json::from_str(&json)?;
+        Ok(config)
+    }
+    pub fn save(&self, path: &str) -> IOResult<()> {
+        let json = serde_json::to_string_pretty(&self)?;
+        std::fs::write("config.json", json)?;
+        Ok(())
+    }
+}
 
 #[derive(Serialize, PartialEq, Clone)]
 pub enum State {
@@ -67,7 +115,7 @@ pub struct App {
 
 impl App {
     pub fn new(arguments:Arguments) -> Self {
-        let mut config = Config{endpoints:Vec::new()};
+        let mut config = Config{sources:Vec::new()};
         if let Some(config_path) = arguments.config_path.clone(){
             match Config::load(&config_path){
                 Ok(c) => {
@@ -102,6 +150,16 @@ impl App {
     }
 
     pub async fn set_config(&mut self, config: Config) -> IOResult<()> {
+        let mut config = config.clone();
+        let mut addresses = HashSet::new();
+        config.sources.retain(|source| {
+            if addresses.insert(source.address.clone()) {
+                true
+            } else {
+                log::warn!("Removing duplicate source with address: {}",source.address);
+                false
+            }
+        });
         self.config = config;
         if let Some(config_path) = self.arguments.config_path.clone(){
             if let Err(e) = self.config.save(config_path.as_str()) {

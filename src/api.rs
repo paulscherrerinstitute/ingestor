@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use crate::{Arguments, Config};
-use crate::app::{App, Status, Stats};
+use crate::{Arguments};
+use crate::app::{App, Status, Stats, Config};
 use axum::{extract::State, routing::get, routing::post, routing::put, Json, Router, http::StatusCode, response::{IntoResponse}, Error};
 use std::sync::Arc;
 use bsread::EndpointDiag;
@@ -8,6 +8,7 @@ use serde::Serialize;
 use serde_json::json;
 use tokio::sync::{ RwLock};
 
+const API_PREFIX: &str = "/api";
 
 #[derive(Serialize)]
 pub struct Response {
@@ -130,17 +131,19 @@ async fn reset_stats(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Respons
 
 pub fn init(app:Arc<RwLock<App>>) -> Router {
     let api = Router::new()
-        .route("/api/args", get(args))
-        .route("/api/state", get(state))
-        .route("/api/status", get(status))
-        .route("/api/diags", get(diags))
-        .route("/api/config", get(config))
-        .route("/api/stats", get(stats))
-        .route("/api/start", post(start))
-        .route("/api/stop", post(stop))
-        .route("/api/reset_stats", post(reset_stats))
-        .route("/api/config", put(set_config))
+        .route("/args", get(args))
+        .route("/state", get(state))
+        .route("/status", get(status))
+        .route("/diags", get(diags))
+        .route("/config", get(config))
+        .route("/stats", get(stats))
+        .route("/start", post(start))
+        .route("/stop", post(stop))
+        .route("/reset_stats", post(reset_stats))
+        .route("/config", put(set_config));
+    let app = Router::new()
+        .nest(API_PREFIX, api)
         .with_state(app);
-    api
+    app
 }
 

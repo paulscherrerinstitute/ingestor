@@ -4,8 +4,8 @@ use bsread::{EndpointDiag, EndpointState, IOError, IOResult};
 use serde::Serialize;
 use tokio::sync::mpsc::{channel, Sender, Receiver};
 use tokio::sync::oneshot;
-use crate::app::{Stats, Status};
-use crate::{engine, Config};
+use crate::app::{Stats, Status, Config};
+use crate::{engine};
 use crate::engine::EngineCommand;
 
 #[derive(Clone)]

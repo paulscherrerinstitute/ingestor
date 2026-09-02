@@ -9,7 +9,7 @@ use log;
 use clap::{Arg, Command};
 use ::bsread::*;
 use std::str::FromStr;
-use app::{App};
+use app::{App, };
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -20,10 +20,12 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::channel;
 use crate::engine::Engine;
 
+const DEFAULT_ID:&str = "Undefined";
 const DEFAULT_PORT:u32 = 15000;
 
 #[derive(Serialize, Clone)]
 pub struct Arguments {
+    instance_id: String,
     pool_size: usize,
     receivers: usize,
     debug:bool,
@@ -38,29 +40,6 @@ pub struct Arguments {
     blocking_config:bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Config {
-    endpoints:Vec<String>,
-}
-
-impl Config {
-    pub fn update(&mut self, endpoints:Vec<String>)  {
-        self.endpoints = endpoints.clone();
-    }
-
-    pub fn load(path: &str) -> IOResult<Self> {
-        let json =std::fs::read_to_string("config.json")?;
-        let config: Config = serde_json::from_str(&json)?;
-        Ok(config)
-    }
-
-    pub fn save(&self, path: &str) -> IOResult<()> {
-        let json = serde_json::to_string_pretty(&self)?;
-        std::fs::write("config.json", json)?;
-        Ok(())
-    }
-
-}
 
 #[macro_export]
 macro_rules! exit {
@@ -82,6 +61,14 @@ async fn main() {
                 .long("log")
                 .value_name("LOG")
                 .help("Log level (dafault=info)")
+                .num_args(1) // Expects one value
+                .required(false),
+        )
+        .arg(
+            Arg::new("InstanceId")
+                .short('i')
+                .long("instance-id")
+                .help(format!("Application instance ID (default={})", DEFAULT_ID))
                 .num_args(1) // Expects one value
                 .required(false),
         )
@@ -226,6 +213,7 @@ async fn main() {
     } else {
         1
     };
+    let instance_id  = matches.get_one::<String>("InstanceId").cloned().unwrap_or(DEFAULT_ID.to_string());
 
     let config_path= matches.get_one::<String>("ConfigPath").cloned();
 
@@ -285,7 +273,7 @@ async fn main() {
         true
     };
 
-    let arguments = Arguments{ pool_size, receivers, debug, config_path, output_path, receive_hwm,
+    let arguments = Arguments{instance_id, pool_size, receivers, debug, config_path, output_path, receive_hwm,
         auto_start, concurrent, buffer_size, join_channels, disable_handshake, blocking_config};
     let app = App::new(arguments.clone());
     let mut app = Arc::new(RwLock::new(app));

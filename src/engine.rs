@@ -8,11 +8,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::thread::Thread;
 use bsread::receiver::AsyncExecution;
-use crate::app::{Stats, App, Status};
+use crate::app::{Stats, App, Status, Config, Source};
 use crate::api::AppError;
 use crate::processor::Processor;
 use crate::Arguments;
-use crate::Config;
 use tokio::sync::mpsc::Receiver;
 use crossbeam_channel;
 use crossbeam_channel::RecvError;
@@ -59,7 +58,7 @@ pub struct Engine {
     arguments:Arguments,
     contexts: Vec<Arc<Bsread>>,
     pools: Vec<Pool>,
-    endpoints:Vec<String>,
+    sources:Vec<Source>,
     handle: Handle,
     current: usize,
     connected:bool,
@@ -73,8 +72,8 @@ impl Engine {
     pub fn new(arguments:Arguments,  handle:Handle, processor:Arc<Processor>) -> Self{
         let contexts = Vec::new();
         let pools = Vec::new();
-        let endpoints = Vec::new();
-        Engine {arguments, contexts, endpoints, pools, handle, processor,
+        let sources = Vec::new();
+        Engine {arguments, contexts, sources, pools, handle, processor,
             current:0,
             connected: false,
             processing_stats: Arc::new(ProcessingStats{ processing: AtomicU32::new(0), processed: AtomicU32::new(0) }),
@@ -158,15 +157,15 @@ impl Engine {
         self.add_pool();
         self.current = 0;
         self.connected = true;
-        for endpoint in self.endpoints.clone() {
-            self.try_connect_endpoint(&endpoint);
+        for source in self.sources.clone() {
+            self.try_connect_endpoint(&source.address, &source.socket_type.map(Into::into));
         }
 
         //for i in 1000..1200{
-        //    self.try_connect_endpoint(&format!("tcp://129.129.66.28:{}", i));
+        //    self.try_connect_endpoint(&format!("tcp://129.129.66.28:{}", i), None);
         //}
         //for i in 10..210{
-        //    self.try_connect_endpoint(&format!("tcp://129.129.66.{}:1000", i));
+        //    self.try_connect_endpoint(&format!("tcp://129.129.66.{}:1000", i), None);
         //}
 
         //let futures = self.endpoints.clone().into_iter()
@@ -177,9 +176,9 @@ impl Engine {
     }
 
     pub fn config(&mut self, config: Config) -> IOResult<()> {
-        if self.endpoints.len()==0{
+        if self.sources.len()==0{
             //Initial config
-            self.endpoints = config.endpoints;
+            self.sources = config.sources;
             if self.connected {
                 self.start()?;
             }
@@ -187,30 +186,38 @@ impl Engine {
             let start = Instant::now();
             //Incremental config
             //remove duplicates
-            let mut endpoints = config.endpoints;
+            let mut sources = config.sources;
             let mut seen = HashSet::new();
-            endpoints.retain(|x| seen.insert(x.to_string()));
+            sources.retain(|x| seen.insert(x.address.to_string()));
 
-            let added: Vec<String> = endpoints
+            let added: Vec<Source> = sources
                 .iter()
-                .filter(|e| !self.endpoints.contains(e))
+                .filter(|new| {
+                    !self.sources.iter().any(|old| {
+                        old.address == new.address && old.socket_type == new.socket_type
+                    })
+                })
                 .cloned()
                 .collect();
 
-            let removed: Vec<String> = self.endpoints
+            let removed: Vec<Source> = self.sources
                 .iter()
-                .filter(|e| !endpoints.contains(e))
+                .filter(|old| {
+                    !sources.iter().any(|new| {
+                        new.address == old.address && new.socket_type == old.socket_type
+                    })
+                })
                 .cloned()
                 .collect();
 
-            for endpoint in removed {
-                self.disconnect_endpoint(&endpoint);
+            for source in removed {
+                self.disconnect_endpoint(&source.address);
             }
 
-            for endpoint in added {
-                self.try_connect_endpoint(&endpoint);
+            for source in added {
+                self.try_connect_endpoint(&source.address, &source.socket_type.map(Into::into));
             }
-            self.endpoints = endpoints;
+            self.sources = sources;
             log::info!("Reconfigured in {:?}", start.elapsed());
         }
         Ok(())
@@ -235,7 +242,7 @@ impl Engine {
         }
     }
 
-    fn connect_endpoint(&mut self, endpoint: &String) -> IOResult<()> {
+    fn connect_endpoint(&mut self, endpoint: &String, socket_type:&Option<SocketType>) -> IOResult<()> {
         let pool_size = self.pool_size();
         if self.endpoint_pool(endpoint).is_none(){
             let mut pool = self.current();
@@ -243,19 +250,19 @@ impl Engine {
                 self.add_pool()?;
                 pool = self.current();
             }
-            pool.add_endpoint(endpoint, None)?;
+            pool.add_endpoint(endpoint, socket_type.clone(), None)?;
         }
         Ok(())
     }
 
-    fn try_connect_endpoint(&mut self, endpoint: &String) {
+    fn try_connect_endpoint(&mut self, endpoint: &String, socket_type:&Option<SocketType>) {
         let start = Instant::now();
 
-        if let Err(e) = self.connect_endpoint(&endpoint) {
+        if let Err(e) = self.connect_endpoint(&endpoint, &socket_type) {
             log::error!("Error connecting to endpoint {}: {:?}", endpoint, e);
         }
 
-        log::info!("Connecting to {} took {:?}", endpoint, start.elapsed());
+        log::debug!("Connecting to {} took {:?}", endpoint, start.elapsed());
     }
 
     fn current(& mut self) -> &mut Pool {
