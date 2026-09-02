@@ -25,6 +25,7 @@ impl ChannelProcessor {
         if let Some(path) = &self.arguments.output_path {
             Self::save_channel(path, id, tm, config.name(), &data, config.kind(), config.shape(), config.size());
         }
+        log::trace!("Processing Channel name:{} type:{:?} shape:{:?} [ID:{}]", config.name(), config.kind(), config.shape(), id);
     }
 
  

@@ -3,9 +3,11 @@ use std::time::Duration;
 use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
+use std::str::FromStr;
 use std::sync::Arc;
 use bsread::{Bsread, EndpointDiag, EndpointState, IOError, IOResult, SocketType};
 use bsread::message::DECOMPRESSION_ERROR;
+use log::LevelFilter;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::runtime::Handle;
 use crate::{engine, Arguments};
@@ -115,6 +117,9 @@ pub struct App {
 
 impl App {
     pub fn new(arguments:Arguments) -> Self {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
+        log::set_max_level(LevelFilter::from_str(&arguments.log_level).unwrap_or(LevelFilter::Info));
+
         let mut config = Config{sources:Vec::new()};
         if let Some(config_path) = arguments.config_path.clone(){
             match Config::load(&config_path){
@@ -244,6 +249,15 @@ impl App {
     pub async fn reset_stats(&self,) -> IOResult<()> {
         self.engine_client.reset_stats().await
     }
+
+    pub async fn log_level(&self) ->  IOResult<String>  { Ok(log::max_level().to_string()) }
+
+    pub async fn set_log_level(&self, level:String) ->  IOResult<()>  {
+        let filter = LevelFilter::from_str(&level)
+            .map_err(|e| {IOError::new(ErrorKind::InvalidInput,format!("Invalid level: {}", level))})?;
+        Ok(log::set_max_level(filter))
+    }
+
 
     pub fn close(&mut self) -> IOResult<()> {
         self.state = State::Closed;

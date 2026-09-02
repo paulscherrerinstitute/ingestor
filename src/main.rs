@@ -15,6 +15,7 @@ use std::thread;
 use std::time::Duration;
 use clap::builder::Str;
 use axum::{extract::State,routing::get,Json, Router,};
+use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::channel;
@@ -25,6 +26,7 @@ const DEFAULT_PORT:u32 = 15000;
 
 #[derive(Serialize, Clone)]
 pub struct Arguments {
+    log_level: String,
     instance_id: String,
     pool_size: usize,
     receivers: usize,
@@ -184,9 +186,6 @@ async fn main() {
         "info".to_string()
     };
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(log_level)).try_init();
-
-
     let port =if let Some(text) = matches.get_one::<String>("Port") {
         match text.parse::<u32>() {
             Ok(number) => number,
@@ -273,7 +272,7 @@ async fn main() {
         true
     };
 
-    let arguments = Arguments{instance_id, pool_size, receivers, debug, config_path, output_path, receive_hwm,
+    let arguments = Arguments{instance_id, log_level, pool_size, receivers, debug, config_path, output_path, receive_hwm,
         auto_start, concurrent, buffer_size, join_channels, disable_handshake, blocking_config};
     let app = App::new(arguments.clone());
     let mut app = Arc::new(RwLock::new(app));
