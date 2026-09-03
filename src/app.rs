@@ -50,6 +50,7 @@ pub struct Source {
     pub address: String,
     #[serde(rename = "type")]
     pub socket_type: Option<SocketKind>,
+    pub enabled: Option<bool>,
 }
 
 impl Config {
@@ -100,6 +101,8 @@ pub struct Stats {
     pub errors_rate: f32,
     pub dropped_rate: f32,
     pub processed_rate: f32,
+    pub duplicated_sources: u32,
+    pub disabled_sources: u32,
     pub cpu:f32,
     pub memory:u64,
     pub files:usize,
@@ -155,16 +158,6 @@ impl App {
     }
 
     pub async fn set_config(&mut self, config: Config) -> IOResult<()> {
-        let mut config = config.clone();
-        let mut addresses = HashSet::new();
-        config.sources.retain(|source| {
-            if addresses.insert(source.address.clone()) {
-                true
-            } else {
-                log::warn!("Removing duplicate source with address: {}",source.address);
-                false
-            }
-        });
         self.config = config;
         if let Some(config_path) = self.arguments.config_path.clone(){
             if let Err(e) = self.config.save(config_path.as_str()) {

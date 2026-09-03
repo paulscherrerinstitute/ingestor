@@ -52,6 +52,8 @@ pub enum EngineCommand {
 struct ProcessingStats {
     processing: AtomicU32,
     processed: AtomicU32,
+    duplicated_sources: AtomicU32,
+    disabled_sources: AtomicU32,
 }
 
 pub struct Engine {
@@ -76,7 +78,8 @@ impl Engine {
         Engine {arguments, contexts, sources, pools, handle, processor,
             current:0,
             connected: false,
-            processing_stats: Arc::new(ProcessingStats{ processing: AtomicU32::new(0), processed: AtomicU32::new(0) }),
+            processing_stats: Arc::new(ProcessingStats{ processing: AtomicU32::new(0), processed: AtomicU32::new(0),
+                duplicated_sources: AtomicU32::new(0), disabled_sources: AtomicU32::new(0)}),
             last_stats: None
         }
     }
@@ -176,20 +179,41 @@ impl Engine {
     }
 
     pub fn config(&mut self, config: Config) -> IOResult<()> {
+        self.processing_stats.duplicated_sources.store(0, Ordering::Relaxed);
+        self.processing_stats.disabled_sources.store(0, Ordering::Relaxed);
+
+        let mut sources = config.sources;
+
+        sources.retain(|source| {
+            if source.enabled == Some(false) {
+                self.processing_stats.disabled_sources.fetch_add(1, Ordering::Relaxed);
+                log::info!("Ignoring disabled source: {}", source.address);
+                false
+            } else {
+                true
+            }
+        });
+
+        let mut addresses = HashSet::new();
+        sources.retain(|source| {
+            if addresses.insert(source.address.clone()) {
+                true
+            } else {
+                self.processing_stats.duplicated_sources.fetch_add(1, Ordering::Relaxed);
+                log::warn!("Removing duplicate source with address: {}",source.address);
+                false
+            }
+        });
+
         if self.sources.len()==0{
             //Initial config
-            self.sources = config.sources;
+            self.sources = sources;
             if self.connected {
                 self.start()?;
             }
         } else {
             let start = Instant::now();
             //Incremental config
-            //remove duplicates
-            let mut sources = config.sources;
-            let mut seen = HashSet::new();
-            sources.retain(|x| seen.insert(x.address.to_string()));
-
             let added: Vec<Source> = sources
                 .iter()
                 .filter(|new| {
@@ -385,6 +409,8 @@ impl Engine {
             dropped:  self.dropped(),
             processing:self.processing(),
             processed: self.processed(),
+            duplicated_sources: self.processing_stats.duplicated_sources.load(Ordering::Relaxed),
+            disabled_sources: self.processing_stats.disabled_sources.load(Ordering::Relaxed),
             received_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.received_rate),
             errors_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.errors_rate),
             dropped_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.dropped_rate),
@@ -450,6 +476,7 @@ impl Engine {
         self.last_stats = Some(Stats{
             received,errors, dropped, processing, processed,
             received_rate, errors_rate, dropped_rate, processed_rate,
+            duplicated_sources:0, disabled_sources:0,
             cpu:0.0, memory:0, files:0
         });
     }
