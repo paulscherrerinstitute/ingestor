@@ -402,7 +402,18 @@ impl Engine {
 
     pub fn stats(& self) -> Stats {
         let (cpu, memory, files) = App::process_resources();
-
+        let mut connected_sources = 0;
+        let mut connecting_sources = 0;
+        let mut disconnected_sources = 0;
+        for pool in self.pools.iter() {
+            for state in pool.endpoint_states().values() {
+                match state {
+                    EndpointState::Connecting => connecting_sources += 1,
+                    EndpointState::Connected => connected_sources += 1,
+                    EndpointState::Disconnected => disconnected_sources += 1,
+                }
+            }
+        }
         Stats {
             received: self. messages(),
             errors:  self.errors(),
@@ -411,6 +422,7 @@ impl Engine {
             processed: self.processed(),
             duplicated_sources: self.processing_stats.duplicated_sources.load(Ordering::Relaxed),
             disabled_sources: self.processing_stats.disabled_sources.load(Ordering::Relaxed),
+            connected_sources, connecting_sources, disconnected_sources,
             received_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.received_rate),
             errors_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.errors_rate),
             dropped_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.dropped_rate),
@@ -477,6 +489,7 @@ impl Engine {
             received,errors, dropped, processing, processed,
             received_rate, errors_rate, dropped_rate, processed_rate,
             duplicated_sources:0, disabled_sources:0,
+            connected_sources:0, connecting_sources: 0, disconnected_sources: 0,
             cpu:0.0, memory:0, files:0
         });
     }
