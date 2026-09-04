@@ -17,7 +17,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use crate::channel_processor::ChannelProcessor;
 use crate::engine_client::EngineClient;
-use crate::processor::Processor;
+use crate::processor::{Processor, SourceInfo};
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +118,7 @@ pub struct App {
     state:State,
     timer_handle: Option<JoinHandle<()>>,
     engine_client: EngineClient,
+    processor: Arc<Processor>,
 }
 
 
@@ -142,7 +143,7 @@ impl App {
         let channel_processor = Arc::new(ChannelProcessor::new(arguments.clone()));
         let processor = Arc::new(Processor::new(arguments.clone(), channel_processor));
         Engine::launch(arguments.clone(), engine_rx, handle.clone(), processor.clone());
-        App {arguments, config, engine_client, state:State::Starting, timer_handle: None}
+        App {arguments, config, engine_client, processor, state:State::Starting, timer_handle: None}
     }
 
     pub fn process_resources() -> (f32, u64, usize) {
@@ -254,6 +255,9 @@ impl App {
         Ok(log::set_max_level(filter))
     }
 
+    pub async fn sources(&self) -> IOResult<HashMap<String, SourceInfo>> {
+        self.processor.sources_info().await
+    }
 
     pub fn close(&mut self) -> IOResult<()> {
         self.state = State::Closed;

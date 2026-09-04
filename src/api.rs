@@ -8,6 +8,7 @@ use bsread::EndpointDiag;
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::{ RwLock};
+use crate::processor::SourceInfo;
 
 const API_PREFIX: &str = "/api";
 
@@ -85,6 +86,12 @@ async fn stats(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Stats>, AppEr
     Ok(Json(app.stats().await?))
 }
 
+async fn sources(State(app): State<Arc<RwLock<App>>>) -> Result<Json<HashMap<String, SourceInfo>>, AppError> {
+    log::debug!("API call: sources");
+    let app = app.read().await;
+    Ok(Json(app.sources().await?))
+}
+
 async fn log_level(State(app): State<Arc<RwLock<App>>>) -> Result<Json<String>, AppError> {
     log::debug!("API call: log_level");
     let app = app.read().await;
@@ -138,6 +145,7 @@ pub fn init(app:Arc<RwLock<App>>) -> Router {
         .route("/diags", get(diags))
         .route("/config", get(config))
         .route("/stats", get(stats))
+        .route("/sources", get(sources))
         .route("/log-level", get(log_level))
         .route("/start", post(start))
         .route("/stop", post(stop))

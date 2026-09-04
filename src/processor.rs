@@ -2,17 +2,40 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::thread;
-use bsread::{Bsread, EndpointEvent, EndpointState, EndpointDiag, Message, Pool, IOResult, IOError, ChannelConfig, ChannelData};
+use bsread::{Bsread, EndpointEvent, EndpointState, EndpointDiag, Message, Pool, IOResult, IOError, ChannelConfig, ChannelData, SocketType};
 use crate::Arguments;
 use std::sync::{Mutex, RwLock};
 use std::sync::atomic::{AtomicU32, Ordering};
 use futures::future::join_all;
 use std::io::{self, Write};
+use serde::Serialize;
 use crate::channel_processor::ChannelProcessor;
 
+
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChannelInfo{
+    name: String,
+    kind: String,
+    shape: Vec<u32>
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceInfo{
+    last_id: u64,
+    last_received: i64,
+    age: i64,
+    channels: Vec<ChannelInfo>,
+}
+
+impl SourceInfo {
+    fn new() -> SourceInfo {
+        SourceInfo{last_id: 0, last_received: 0, age: 0, channels: Vec::new()}
+    }
+}
 pub struct Processor {
     arguments:Arguments,
-    last_ids:Arc<Mutex<HashMap<String, u64>>>,
+    sources_info:Arc<RwLock<HashMap<String, SourceInfo>>>,
     channel_processor: Arc<ChannelProcessor>,
 }
 
@@ -21,7 +44,7 @@ impl Processor {
     pub fn new(arguments:Arguments, channel_processor: Arc<ChannelProcessor>) -> Self {
         Self {
             arguments,
-            last_ids: Arc::new(Mutex::new(HashMap::new())),
+            sources_info: Arc::new(RwLock::new(HashMap::new())),
             channel_processor,
         }
     }
@@ -71,19 +94,48 @@ impl Processor {
 
     fn check_msg(&self, endpoint: &Option<String>, message: &Message) -> IOResult<()> {
         let id = message.id() ;
-        //if id % 2 ==0{thread::sleep(Duration::from_millis(50)); }
-        let endpoint = endpoint.clone().unwrap_or(String::from(""));
-        //println!("{:?} {:?}, {}", thread::current().id(), endpoint, id);
-        let mut last_ids = self.last_ids.lock().unwrap();
-        let last_id = last_ids.get(endpoint.as_str()).unwrap_or(&(0)).clone();
-        if last_id > 0 {
-            if last_id >= id {
-                return Err(IOError::new(ErrorKind::Other, format!("Received unordered message for {:?} last: {:?}, id: {}", endpoint, last_id, id)));
-            } else if id != last_id + 1 {
-                log::warn!("Missed ID from  {:?} last: {:?}, id: {}", endpoint, last_id, id);
+        //let endpoint = endpoint.clone().unwrap_or(String::from(""));
+        let endpoint = match endpoint {
+            Some(endpoint) => endpoint,
+            None => {""}
+        };
+
+        let mut sources_info = self.sources_info.write().unwrap();
+        let mut source_info = match sources_info.get_mut(endpoint) {
+            Some(map) => map,
+            None => {
+                let source_info = SourceInfo::new();
+                sources_info.entry(endpoint.to_owned()).or_insert(source_info)
+            },
+
+        };
+
+        if source_info.last_id > 0 {
+            if source_info.last_id >= id {
+                return Err(IOError::new(ErrorKind::Other, format!("Received unordered message for {:?} last: {:?}, id: {}", endpoint, source_info.last_id, id)));
+            } else if id != source_info.last_id + 1 {
+                //TODO: Remove
+                log::warn!("Missed ID from  {:?} last: {:?}, id: {}", endpoint, source_info.last_id, id);
             }
         }
-  last_ids.insert(endpoint.to_string(), id);
+
+        if message.header_changed() {
+            let mut channels = Vec::new();
+            for channel in message.channels().iter() {
+                let config  = channel.config();
+                channels.push(ChannelInfo{name: config.name(), kind: config.kind(), shape: config.shape().unwrap_or(Vec::new())});
+            }
+            source_info.channels = channels;
+        }
+
+        let now = chrono::Local::now();
+        source_info.age = if  now.timestamp() > source_info.last_received {
+            now.timestamp() - source_info.last_received
+        } else {
+            0
+        };
+        source_info.last_received = now.timestamp();
+        source_info.last_id = id;
         Ok(())
     }
 
@@ -114,5 +166,10 @@ impl Processor {
     pub async fn on_endpoint_diag(&self, endpoint: String, diag: EndpointDiag, id: Option<u64>) {
         let timestamp = chrono::Local::now().format("%H:%M:%S");
         println!("{} - Endpoint {} id {:?} diag: {:?}", timestamp, endpoint, id, diag);
+    }
+
+
+    pub async fn sources_info(&self) -> IOResult<HashMap<String, SourceInfo>> {
+        Ok(self.sources_info.read().unwrap().clone())
     }
 }

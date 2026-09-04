@@ -7,7 +7,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::thread::Thread;
-use bsread::receiver::AsyncExecution;
+use bsread::receiver::{AsyncExecution, MessageStats};
 use crate::app::{Stats, App, Status, Config, Source};
 use crate::api::AppError;
 use crate::processor::Processor;
@@ -54,6 +54,12 @@ struct ProcessingStats {
     processed: AtomicU32,
     duplicated_sources: AtomicU32,
     disabled_sources: AtomicU32,
+}
+
+struct  SourceStats {
+    connected: u32,
+    connecting: u32,
+    disconnected: u32,
 }
 
 pub struct Engine {
@@ -402,27 +408,19 @@ impl Engine {
 
     pub fn stats(& self) -> Stats {
         let (cpu, memory, files) = App::process_resources();
-        let mut connected_sources = 0;
-        let mut connecting_sources = 0;
-        let mut disconnected_sources = 0;
-        for pool in self.pools.iter() {
-            for state in pool.endpoint_states().values() {
-                match state {
-                    EndpointState::Connecting => connecting_sources += 1,
-                    EndpointState::Connected => connected_sources += 1,
-                    EndpointState::Disconnected => disconnected_sources += 1,
-                }
-            }
-        }
+
+        let sources_stats = self.source_stats();
+        let message_stats = self.message_stats();
+
         Stats {
-            received: self. messages(),
-            errors:  self.errors(),
-            dropped:  self.dropped(),
+            received: message_stats.messages,
+            errors: message_stats.errors,
+            dropped:  message_stats.dropped,
             processing:self.processing(),
             processed: self.processed(),
             duplicated_sources: self.processing_stats.duplicated_sources.load(Ordering::Relaxed),
             disabled_sources: self.processing_stats.disabled_sources.load(Ordering::Relaxed),
-            connected_sources, connecting_sources, disconnected_sources,
+            connected_sources:sources_stats.connected, connecting_sources:sources_stats.connecting, disconnected_sources:sources_stats.disconnected,
             received_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.received_rate),
             errors_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.errors_rate),
             dropped_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.dropped_rate),
@@ -458,6 +456,30 @@ impl Engine {
             .iter()
             .map(|r| r.dropped())
             .sum()
+    }
+
+    pub fn message_stats(&self) -> MessageStats {
+        let mut total = MessageStats::default();
+        for pool in &self.pools {
+            let stats = pool.message_stats();
+            total.messages += stats.messages;
+            total.errors += stats.errors;
+            total.dropped += stats.dropped;
+        }
+        total
+    }
+
+    pub fn source_stats(&self) -> SourceStats {
+        let mut source_stats: HashMap<EndpointState, u32> = HashMap::new();
+        for pool in &self.pools {
+            for (state, count) in pool.endpoint_stats() {
+                *source_stats.entry(state).or_insert(0) += count;
+            }
+        }
+        let connected = source_stats.get(&EndpointState::Connected).copied().unwrap_or(0);
+        let connecting = source_stats.get(&EndpointState::Connecting).copied().unwrap_or(0);
+        let disconnected = source_stats.get(&EndpointState::Disconnected).copied().unwrap_or(0);
+        SourceStats{connected, connecting,disconnected,}
     }
 
     pub fn processing(&self) -> u32 {
