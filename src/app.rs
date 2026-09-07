@@ -258,6 +258,10 @@ impl App {
     pub async fn sources(&self) -> IOResult<HashMap<String, SourceInfo>> {
         self.processor.sources_info().await
     }
+    pub async fn source(&self, source:&str) -> IOResult<SourceInfo> {
+        self.processor.source_info(source).await
+    }
+
 
     pub fn close(&mut self) -> IOResult<()> {
         self.state = State::Closed;

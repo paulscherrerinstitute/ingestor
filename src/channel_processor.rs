@@ -7,6 +7,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use chrono::Local;
 use std::fs;
+use log::LevelFilter;
 
 pub struct ChannelProcessor {
     arguments:Arguments,
@@ -25,7 +26,12 @@ impl ChannelProcessor {
         if let Some(path) = &self.arguments.output_path {
             Self::save_channel(path, id, tm, config.name(), &data, config.kind(), config.shape(), config.size());
         }
-        log::trace!("Processing Channel name:{} type:{:?} shape:{:?} [ID:{}]", config.name(), config.kind(), config.shape(), id);
+        if log::max_level() == LevelFilter::Trace {
+            log::trace!("Processing Channel name:{} type:{:?} shape:{:?} [ID:{}]", config.name(), config.kind(), config.shape(), id);
+        }
+
+        
+
     }
 
  

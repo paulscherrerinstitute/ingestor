@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use crate::{Arguments};
 use crate::app::{App, Status, Stats, Config};
-use axum::{extract::State, routing::get, routing::post, routing::put, Json, Router, http::StatusCode, response::{IntoResponse}, Error};
+use axum::{extract::{Path, State}, routing::get, routing::post, routing::put, Json, Router, http::StatusCode, response::{IntoResponse}, Error};
 use std::sync::Arc;
 use bsread::EndpointDiag;
 use serde::Serialize;
@@ -92,6 +92,11 @@ async fn sources(State(app): State<Arc<RwLock<App>>>) -> Result<Json<HashMap<Str
     Ok(Json(app.sources().await?))
 }
 
+async fn source(State(app): State<Arc<RwLock<App>>>,Path(address): Path<String>,) -> Result<Json<SourceInfo>, AppError> {
+    log::debug!("API call: source {}", address);
+    let app = app.read().await;
+    Ok(Json(app.source(&address).await?))
+}
 async fn log_level(State(app): State<Arc<RwLock<App>>>) -> Result<Json<String>, AppError> {
     log::debug!("API call: log_level");
     let app = app.read().await;
@@ -146,6 +151,7 @@ pub fn init(app:Arc<RwLock<App>>) -> Router {
         .route("/config", get(config))
         .route("/stats", get(stats))
         .route("/sources", get(sources))
+        .route("/source/{*address}", get(source))
         .route("/log-level", get(log_level))
         .route("/start", post(start))
         .route("/stop", post(stop))

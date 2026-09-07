@@ -119,7 +119,7 @@ impl Processor {
             }
         }
 
-        if message.header_changed() {
+        if message.header_changed() || source_info.channels.is_empty() {
             let mut channels = Vec::new();
             for channel in message.channels().iter() {
                 let config  = channel.config();
@@ -171,5 +171,12 @@ impl Processor {
 
     pub async fn sources_info(&self) -> IOResult<HashMap<String, SourceInfo>> {
         Ok(self.sources_info.read().unwrap().clone())
+    }
+
+    pub async fn source_info(&self, source:&str) -> IOResult<SourceInfo> {
+        match self.sources_info.read().unwrap().get(source){
+            None => {Err(IOError::new(ErrorKind::InvalidInput, format!("Source not found: {}", source)))},
+            Some(info) => {Ok(info.clone())}
+        }
     }
 }
