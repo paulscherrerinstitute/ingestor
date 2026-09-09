@@ -43,12 +43,7 @@ impl ChannelProcessor {
         println!("Channel {} id:{} data:{:?} type:{} shape:{:?} size:{}", name, id, data, kind, shape, size);
     }
 
-    fn save_channel(path: &String, id: u64, tm: (u64, u64), name:String, data:&Option<Vec<u8>>, kind:String, shape:Option<Vec<u32>>, size:usize) {
-        let path = if let Some(rest) = path.strip_prefix("~/") {
-            PathBuf::from(std::env::var("HOME").unwrap()).join(rest)
-        } else {
-            PathBuf::from(path)
-        };
+    fn save_channel(path: &PathBuf, id: u64, tm: (u64, u64), name:String, data:&Option<Vec<u8>>, kind:String, shape:Option<Vec<u32>>, size:usize) {
         let filename = format!("{}.bin", Local::now().format("%Y%m%d").to_string());
         let path = path.join(&name).join(size.to_string()).join(filename);
         if let Err(err) = Self::append_record(path, id, tm, data, size) {

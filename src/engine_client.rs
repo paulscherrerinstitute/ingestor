@@ -1,4 +1,5 @@
-use crate::app::{Config, Stats, Status};
+use crate::app::{Stats, Status};
+use crate::config::Config;
 use crate::engine::EngineCommand;
 use crate::engine;
 use bsread::{EndpointDiag, IOError, IOResult};

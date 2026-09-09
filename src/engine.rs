@@ -1,5 +1,6 @@
 use crate::Arguments;
-use crate::app::{App, Config, Source, Stats, Status};
+use crate::app::{App, Stats, Status};
+use crate::config::{Config, Source};
 use crate::processor::Processor;
 use bsread::receiver::{AsyncExecution, MessageStats};
 use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOResult, Pool, ReceivedMessage, SocketConfig, SocketType};

@@ -1,5 +1,6 @@
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 pub const DEFAULT_ID: &str = "Undefined";
 pub const DEFAULT_PORT:u32 = 15000;
@@ -19,8 +20,8 @@ pub struct Arguments {
     pub receivers: usize,
     pub port:u32,
     pub debug:bool,
-    pub config_path:String,
-    pub output_path:Option<String>,
+    pub config_path:PathBuf,
+    pub output_path:Option<PathBuf>,
     pub auto_start:bool,
     pub concurrent:bool,
     pub buffer_size: usize,
@@ -40,7 +41,7 @@ impl Default for Arguments {
             receivers: 1,
             port:DEFAULT_PORT,
             debug: false,
-            config_path: CONFIG_FILE_PATH.to_string(),
+            config_path: PathBuf::from(CONFIG_FILE_PATH),
             output_path: None,
             auto_start: false,
             concurrent: false,
@@ -55,15 +56,22 @@ impl Default for Arguments {
 }
 
 impl Arguments {
-    pub fn read() -> Result<Arguments, Box<dyn std::error::Error>> {
-        let text = std::fs::read_to_string(ARGUMENTS_FILE_PATH)?;
+    pub fn read(file:&PathBuf) -> Result<Arguments, Box<dyn std::error::Error>> {
+        let text = std::fs::read_to_string(file)?;
         let config = toml::from_str(&text)?;
         Ok(config)
     }
 
 
     pub fn parse() -> Self {
-        let mut arguments = match Arguments::read() {
+        let cli = Cli::parse();
+
+        let args_file = match &cli.args_file{
+            None => {&PathBuf::from(ARGUMENTS_FILE_PATH)}
+            Some(file) => {file}
+        };
+
+        let mut arguments = match Arguments::read(args_file) {
             Ok(arguments) => {
                 log::info!("Loaded arguments from {}", ARGUMENTS_FILE_PATH);
                 arguments
@@ -74,13 +82,7 @@ impl Arguments {
             }
         };
 
-        let cli = Cli::parse();
         cli.apply(&mut arguments);
-        if let Some(output_path) = &arguments.output_path {
-            if output_path.trim().is_empty() {
-                arguments.output_path = None;
-            }
-        }
         arguments
     }
 }
@@ -88,56 +90,56 @@ impl Arguments {
 #[derive(Parser, Debug)]
 #[command(name = env!("CARGO_PKG_NAME"), version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = env!("CARGO_PKG_DESCRIPTION"))]
 pub struct Cli {
-    #[arg(short = 'l', long = "log", value_name = "LOG", help = "Log level")]
+    #[arg(short = 'l', long , value_name = "LOG", help = "Log level")]
     pub log_level: Option<String>,
 
-    #[arg(short = 'i', long = "instance-id", help = "Application instance ID")]
+    #[arg(short = 'i', long, help = "Application instance ID")]
     pub instance_id: Option<String>,
 
-    #[arg(short = 'e', long = "database", help = "Scylla database URL")]
+    #[arg(short = 'e', long, help = "Scylla database URL")]
     pub database: Option<String>,
 
-    #[arg(short = 'p', long = "port", value_name = "PORT", help = "Port of the API")]
+    #[arg(short = 'p', long, value_name = "PORT", help = "Port of the API")]
     pub port: Option<u32>,
 
-    #[arg(short = 'd', long = "debug", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Debug flag")]
+    #[arg(short = 'd', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Debug flag")]
     pub debug: Option<bool>,
 
-    #[arg(short = 's', long = "size", help = "Maximum endpoints per context")]
+    #[arg(short = 's', long,  help = "Maximum endpoints per context")]
     pub pool_size: Option<usize>,
 
-    #[arg(short = 'r', long = "receivers", help = "Number of receivers per context")]
+    #[arg(short = 'r', long,  help = "Number of receivers per context")]
     pub receivers: Option<usize>,
 
-    #[arg(short = 'c', long = "config", help = "Channel-list configuration/persistence file name")]
-    pub config_path: Option<String>,
+    #[arg(short = 'c', long , help = "Channel-list configuration/persistence file name")]
+    pub config_path: Option<PathBuf>,
 
-    #[arg(short = 'o', long = "output", help = "Data output path")]
-    pub output_path: Option<String>,
+    #[arg(short = 'o', long, help = "Data output path")]
+    pub output_path: Option<PathBuf>,
 
-    #[arg(short = 'a', long = "auto", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Auto-start connections")]
+    #[arg(short = 'a', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Auto-start connections")]
     pub auto_start: Option<bool>,
 
-    #[arg(short = 't', long = "concurrent", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Does not order sequentially messages from each endpoint")]
+    #[arg(short = 't', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Does not order sequentially messages from each endpoint")]
     pub concurrent: Option<bool>,
 
-    #[arg(short = 'b', long = "buffer-size", help = "Endpoint buffer size, if not concurrent")]
+    #[arg(short = 'b', long, help = "Endpoint buffer size, if not concurrent")]
     pub buffer_size: Option<usize>,
 
-    #[arg(short = 'w', long = "receive-hwm", help = "Receive High Water Mark")]
+    #[arg(short = 'w', long, help = "Receive High Water Mark")]
     pub receive_hwm: Option<i32>,
 
-    #[arg(short = 'k', long = "disable-handshake", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Disable handshake check")]
+    #[arg(short = 'y', long,  action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Disable handshake check")]
     pub disable_handshake: Option<bool>,
 
-    #[arg(short = 'j', long = "join-channels", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Synchronize ingestion of all channels in a message before processing next")]
+    #[arg(short = 'j', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Synchronize ingestion of all channels in a message before processing next")]
     pub join_channels: Option<bool>,
 
-    #[arg(long = "blocking-config", action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Configuration commands are blocking")]
+    #[arg(short = 'k', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Configuration commands are blocking")]
     pub blocking_config: Option<bool>,
 
-    #[arg(long = "args-file", value_name = "FILE", help = "Path to the application arguments TOML file")]
-    pub args_file: Option<std::path::PathBuf>,
+    #[arg(short = 'z', long, value_name = "FILE", help = "Path to the application arguments TOML file")]
+    pub args_file: Option<PathBuf>,
 }
 
 impl Cli {

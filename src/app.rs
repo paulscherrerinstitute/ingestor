@@ -1,4 +1,5 @@
 use crate::channel_processor::ChannelProcessor;
+use crate::config::Config;
 use crate::db::DB;
 use crate::engine::Engine;
 use crate::engine_client::EngineClient;
@@ -10,6 +11,7 @@ use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::ErrorKind;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,54 +19,6 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::task::JoinHandle;
 
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Config {
-    pub sources: Vec<Source>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum SocketKind {
-    PUB,
-    PUSH,
-    PULL,
-    SUB,
-}
-
-impl From<SocketKind> for SocketType {
-    fn from(socket_type: SocketKind) -> Self {
-        match socket_type {
-            SocketKind::PUB => SocketType::PUB,
-            SocketKind::PUSH => SocketType::PUSH,
-            SocketKind::PULL => SocketType::PULL,
-            SocketKind::SUB => SocketType::SUB,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Source {
-    pub address: String,
-    #[serde(rename = "type")]
-    pub socket_type: Option<SocketKind>,
-    pub enabled: Option<bool>,
-}
-
-impl Config {
-    pub fn update(&mut self, sources:Vec<Source>)  {
-        self.sources = sources.clone();
-    }
-    pub fn load(path: &str) -> IOResult<Self> {
-        let json =std::fs::read_to_string("config.json")?;
-        let config: Config = serde_json::from_str(&json)?;
-        Ok(config)
-    }
-    pub fn save(&self, path: &str) -> IOResult<()> {
-        let json = serde_json::to_string_pretty(&self)?;
-        std::fs::write("config.json", json)?;
-        Ok(())
-    }
-}
 
 #[derive(Serialize, PartialEq, Clone)]
 pub enum State {
@@ -126,15 +80,12 @@ impl App {
     //pub async fn new(arguments:Arguments) -> IOResult<Self> {
     pub fn new(arguments:Arc<Arguments>) -> Self {
         let mut config = Config{sources:Vec::new()};
-        let config_path = arguments.config_path.trim();
-        if !config_path.is_empty() {
-            match Config::load(config_path){
-                Ok(c) => {
-                    config = c
-                },
-                Err(e) => {
-                    log::error!("Error loading config from {}: {}", config_path, e);
-                }
+        match Config::load(&arguments.config_path){
+            Ok(c) => {
+                config = c
+            },
+            Err(e) => {
+                log::error!("Error loading config from {:?}: {}", &arguments.config_path, e);
             }
         }
         let db =Arc::new(DB::new(arguments.clone()));
@@ -164,11 +115,8 @@ impl App {
 
     pub async fn set_config(&mut self, config: Config) -> IOResult<()> {
         self.config = config;
-        let config_path = self.arguments.config_path.trim();
-        if !config_path.is_empty(){
-            if let Err(e) = self.config.save(config_path) {
-                    log::error!("Error saving config to {}: {}", config_path, e);
-            }
+        if let Err(e) = self.config.save(&self.arguments.config_path) {
+                log::error!("Error saving config to {:?}: {}", &self.arguments.config_path, e);
         }
         self.engine_client.send_config(self.config.clone()).await
     }

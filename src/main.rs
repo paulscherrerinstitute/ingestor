@@ -7,6 +7,7 @@ mod channel_processor;
 mod db;
 mod ingestor;
 mod arguments;
+mod config;
 
 use crate::arguments::Arguments;
 use crate::db::DB;
