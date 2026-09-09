@@ -1,5 +1,6 @@
 use crate::app::{App, Stats, Status};
 use crate::config::Config;
+use crate::db::ScyllaMetrics;
 use crate::processor::SourceInfo;
 use crate::Arguments;
 use axum::{Json, Router, extract::{Path, State}, http::StatusCode, response::IntoResponse, routing::get, routing::post, routing::put};
@@ -97,6 +98,13 @@ async fn source(State(app): State<Arc<RwLock<App>>>,Path(address): Path<String>,
     let app = app.read().await;
     Ok(Json(app.source(&address).await?))
 }
+
+async fn metrics(State(app): State<Arc<RwLock<App>>>) -> Result<Json<ScyllaMetrics>, AppError> {
+    log::debug!("API call: sources");
+    let app = app.read().await;
+    Ok(Json(app.metrics().await?))
+}
+
 async fn log_level(State(app): State<Arc<RwLock<App>>>) -> Result<Json<String>, AppError> {
     log::debug!("API call: log_level");
     let app = app.read().await;
@@ -150,6 +158,7 @@ pub fn init(app:Arc<RwLock<App>>) -> Router {
         .route("/diags", get(diags))
         .route("/config", get(config))
         .route("/stats", get(stats))
+        .route("/metrics", get(metrics))
         .route("/sources", get(sources))
         .route("/source/{*address}", get(source))
         .route("/log-level", get(log_level))

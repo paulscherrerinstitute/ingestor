@@ -1,6 +1,6 @@
 use crate::channel_processor::ChannelProcessor;
 use crate::config::Config;
-use crate::db::DB;
+use crate::db::{ScyllaMetrics, DB};
 use crate::engine::Engine;
 use crate::engine_client::EngineClient;
 use crate::ingestor::Ingestor;
@@ -222,6 +222,18 @@ impl App {
     pub async fn source(&self, source:&str) -> IOResult<SourceInfo> {
         self.processor.source_info(source).await
     }
+
+    pub async fn metrics(&self) -> IOResult<ScyllaMetrics> {
+        match self.db.metrics(){
+            None => {
+                Err(IOError::new(ErrorKind::NotFound, "No connection to database"))
+            }
+            Some(metrics) => {
+                Ok(metrics)
+            }
+        }
+    }
+
 
 
     pub fn close(&mut self) -> IOResult<()> {
