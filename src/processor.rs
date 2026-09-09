@@ -1,16 +1,14 @@
+use crate::Arguments;
+use crate::channel_processor::ChannelProcessor;
+use bsread::{Bsread, ChannelConfig, ChannelData, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Message, Pool, SocketType};
+use futures::future::join_all;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::io::ErrorKind;
-use std::sync::Arc;
-use std::thread;
-use bsread::{Bsread, EndpointEvent, EndpointState, EndpointDiag, Message, Pool, IOResult, IOError, ChannelConfig, ChannelData, SocketType};
-use crate::Arguments;
-use std::sync::{Mutex, RwLock};
-use std::sync::atomic::{AtomicU32, Ordering};
-use futures::future::join_all;
 use std::io::{self, Write};
-use serde::Serialize;
-use crate::channel_processor::ChannelProcessor;
-
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, RwLock};
 
 
 #[derive(Debug, Clone, Serialize)]

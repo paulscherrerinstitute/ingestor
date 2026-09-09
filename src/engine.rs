@@ -1,24 +1,16 @@
-use std::io::ErrorKind;
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
-use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Message, Pool, ReceivedMessage, SocketConfig, SocketType};
-use serde::Serialize;
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use std::thread::Thread;
-use bsread::receiver::{AsyncExecution, MessageStats};
-use crate::app::{Stats, App, Status, Config, Source};
-use crate::api::AppError;
-use crate::processor::Processor;
 use crate::Arguments;
-use tokio::sync::mpsc::Receiver;
+use crate::app::{App, Config, Source, Stats, Status};
+use crate::processor::Processor;
+use bsread::receiver::{AsyncExecution, MessageStats};
+use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOResult, Pool, ReceivedMessage, SocketConfig, SocketType};
 use crossbeam_channel;
-use crossbeam_channel::RecvError;
-use tokio::runtime::{Runtime, Handle};
-use sysinfo::{Pid, ProcessesToUpdate, System};
-use futures::future::join_all;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::thread;
 use std::time::Instant;
+use tokio::runtime::Handle;
+use tokio::sync::mpsc::Receiver;
 
 
 pub enum EngineCommand {

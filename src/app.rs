@@ -1,26 +1,20 @@
-use std::thread;
-use std::time::Duration;
-use serde::{Serialize, Deserialize};
-use std::collections::{HashMap, HashSet};
-use std::io::ErrorKind;
-use std::str::FromStr;
-use std::sync::{Arc};
-use bsread::{Bsread, EndpointDiag, EndpointState, IOError, IOResult, Receiver, SocketType};
-use bsread::message::DECOMPRESSION_ERROR;
-use log::LevelFilter;
-use sysinfo::{Pid, ProcessesToUpdate, System};
-use tokio::runtime::Handle;
-use crate::{engine, Arguments};
-use tokio::sync::mpsc::{channel, Sender};
-use crate::engine::{Engine, EngineCommand};
-use crate::db::DB;
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
 use crate::channel_processor::ChannelProcessor;
+use crate::db::DB;
+use crate::engine::Engine;
 use crate::engine_client::EngineClient;
 use crate::ingestor::Ingestor;
 use crate::processor::{Processor, SourceInfo};
-use tokio::sync::RwLock;
+use crate::Arguments;
+use bsread::{EndpointDiag, EndpointState, IOError, IOResult, SocketType};
+use log::LevelFilter;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::io::ErrorKind;
+use std::str::FromStr;
+use std::sync::Arc;
+use std::time::Duration;
+use sysinfo::{Pid, ProcessesToUpdate, System};
+use tokio::task::JoinHandle;
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,18 +124,16 @@ pub struct App {
 
 impl App {
     //pub async fn new(arguments:Arguments) -> IOResult<Self> {
-    pub async fn new(arguments:Arc<Arguments>) -> Self {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
-        log::set_max_level(LevelFilter::from_str(&arguments.log_level).unwrap_or(LevelFilter::Info));
-
+    pub fn new(arguments:Arc<Arguments>) -> Self {
         let mut config = Config{sources:Vec::new()};
-        if let Some(config_path) = arguments.config_path.clone(){
-            match Config::load(&config_path){
+        let config_path = arguments.config_path.trim();
+        if !config_path.is_empty() {
+            match Config::load(config_path){
                 Ok(c) => {
                     config = c
                 },
                 Err(e) => {
-                    log::error!("Error loading config from {}: {}", &config_path, e);
+                    log::error!("Error loading config from {}: {}", config_path, e);
                 }
             }
         }
@@ -172,9 +164,10 @@ impl App {
 
     pub async fn set_config(&mut self, config: Config) -> IOResult<()> {
         self.config = config;
-        if let Some(config_path) = self.arguments.config_path.clone(){
-            if let Err(e) = self.config.save(config_path.as_str()) {
-                    log::error!("Error saving config to {}: {}", &config_path, e);
+        let config_path = self.arguments.config_path.trim();
+        if !config_path.is_empty(){
+            if let Err(e) = self.config.save(config_path) {
+                    log::error!("Error saving config to {}: {}", config_path, e);
             }
         }
         self.engine_client.send_config(self.config.clone()).await

@@ -1,11 +1,10 @@
-use std::sync::{Arc};
-use scylla::client::session::Session;
-use crate::{app, Arguments};
-use crate::{db  , DB};
+use crate::Arguments;
+use crate::DB;
+use std::sync::Arc;
 
 
 pub struct Ingestor {
-    arguments:Arc<Arguments>,
+    arguments: Arc<Arguments>,
     db: Arc<DB>,
 }
 

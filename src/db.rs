@@ -1,17 +1,17 @@
-use std::io::ErrorKind;
-use std::sync::Arc;
-use std::time::Duration;
+use crate::channel_processor::ChannelProcessor;
+use crate::ingestor::Ingestor;
+use crate::{Arguments, app};
+use app::State;
+use bsread::{IOError, IOResult};
 use clap::builder::Str;
 use log::Record;
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
-use crate::{app, Arguments};
-use bsread::{IOError, IOResult};
-use app::State;
 use scylla::errors::NewSessionError;
 use serde::Serialize;
-use crate::channel_processor::ChannelProcessor;
-use crate::ingestor::Ingestor;
+use std::io::ErrorKind;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::OnceCell;
 
 pub struct DB {

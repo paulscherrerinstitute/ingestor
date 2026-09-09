@@ -1,14 +1,13 @@
-use std::collections::HashMap;
-use std::io::ErrorKind;
-use crate::{Arguments};
-use crate::app::{App, Status, Stats, Config};
-use axum::{extract::{Path, State}, routing::get, routing::post, routing::put, Json, Router, http::StatusCode, response::{IntoResponse}, Error};
-use std::sync::Arc;
+use crate::app::{App, Config, Stats, Status};
+use crate::processor::SourceInfo;
+use crate::Arguments;
+use axum::{Json, Router, extract::{Path, State}, http::StatusCode, response::IntoResponse, routing::get, routing::post, routing::put};
 use bsread::EndpointDiag;
 use serde::Serialize;
 use serde_json::json;
-use tokio::sync::{ RwLock};
-use crate::processor::SourceInfo;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 const API_PREFIX: &str = "/api";
 

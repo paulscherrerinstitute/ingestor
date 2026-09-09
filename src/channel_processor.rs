@@ -1,25 +1,22 @@
-use std::ffi::IntoStringError;
-use bsread::{Bsread, EndpointEvent, EndpointState, EndpointDiag, Message, Pool, IOResult, IOError, ChannelConfig, ChannelData};
 use crate::Arguments;
 use crate::ingestor::Ingestor;
-use std::sync::atomic::{AtomicU32, Ordering};
+use bsread::ChannelConfig;
+use chrono::Local;
+use log::LevelFilter;
+use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use chrono::Local;
-use std::fs;
-use log::LevelFilter;
-use std::sync::{Arc};
-use tokio::sync::RwLock;
+use std::sync::Arc;
 
 pub struct ChannelProcessor {
-    arguments:Arc<Arguments>,
-    ingestor:Arc<Ingestor>,
+    arguments: Arc<Arguments>,
+    ingestor: Arc<Ingestor>,
 }
 
 
 impl ChannelProcessor {
-    pub fn new(arguments:Arc<Arguments>, ingestor:Arc<Ingestor>) -> Self {
+    pub fn new(arguments: Arc<Arguments>, ingestor: Arc<Ingestor>) -> Self {
         Self {arguments, ingestor}
     }
 

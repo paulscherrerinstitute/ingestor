@@ -1,12 +1,11 @@
+use crate::app::{Config, Stats, Status};
+use crate::engine::EngineCommand;
+use crate::engine;
+use bsread::{EndpointDiag, IOError, IOResult};
 use std::collections::HashMap;
 use std::io::ErrorKind;
-use bsread::{EndpointDiag, EndpointState, IOError, IOResult};
-use serde::Serialize;
-use tokio::sync::mpsc::{channel, Sender, Receiver};
+use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::sync::oneshot;
-use crate::app::{Stats, Status, Config};
-use crate::{engine};
-use crate::engine::EngineCommand;
 
 #[derive(Clone)]
 pub struct EngineClient {
