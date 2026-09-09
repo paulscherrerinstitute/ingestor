@@ -4,8 +4,8 @@ use serde::{Serialize, Deserialize};
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::str::FromStr;
-use std::sync::Arc;
-use bsread::{Bsread, EndpointDiag, EndpointState, IOError, IOResult, SocketType};
+use std::sync::{Arc};
+use bsread::{Bsread, EndpointDiag, EndpointState, IOError, IOResult, Receiver, SocketType};
 use bsread::message::DECOMPRESSION_ERROR;
 use log::LevelFilter;
 use sysinfo::{Pid, ProcessesToUpdate, System};
@@ -13,11 +13,14 @@ use tokio::runtime::Handle;
 use crate::{engine, Arguments};
 use tokio::sync::mpsc::{channel, Sender};
 use crate::engine::{Engine, EngineCommand};
+use crate::db::DB;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use crate::channel_processor::ChannelProcessor;
 use crate::engine_client::EngineClient;
+use crate::ingestor::Ingestor;
 use crate::processor::{Processor, SourceInfo};
+use tokio::sync::RwLock;
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,11 +122,15 @@ pub struct App {
     timer_handle: Option<JoinHandle<()>>,
     engine_client: EngineClient,
     processor: Arc<Processor>,
+    channel_processor: Arc<ChannelProcessor>,
+    ingestor: Arc<Ingestor>,
+    db: Arc<DB>,
 }
 
 
 impl App {
-    pub fn new(arguments:Arguments) -> Self {
+    //pub async fn new(arguments:Arguments) -> IOResult<Self> {
+    pub async fn new(arguments:Arguments) -> Self {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
         log::set_max_level(LevelFilter::from_str(&arguments.log_level).unwrap_or(LevelFilter::Info));
 
@@ -138,12 +145,14 @@ impl App {
                 }
             }
         }
+        let db =Arc::new(DB::new(arguments.clone()));
+        let ingestor=Arc::new(Ingestor::new(arguments.clone(), db.clone()));
         let handle = tokio::runtime::Handle::current();
         let (engine_client, engine_rx) = EngineClient::new();
-        let channel_processor = Arc::new(ChannelProcessor::new(arguments.clone()));
-        let processor = Arc::new(Processor::new(arguments.clone(), channel_processor));
+        let channel_processor = Arc::new(ChannelProcessor::new(arguments.clone(), ingestor.clone()));
+        let processor = Arc::new(Processor::new(arguments.clone(), channel_processor.clone()));
         Engine::launch(arguments.clone(), engine_rx, handle.clone(), processor.clone());
-        App {arguments, config, engine_client, processor, state:State::Starting, timer_handle: None}
+        App {arguments, config, engine_client, processor, channel_processor, db, ingestor, state:State::Starting, timer_handle: None}
     }
 
     pub fn process_resources() -> (f32, u64, usize) {
@@ -188,8 +197,16 @@ impl App {
         if (!self.is_started()){
             log::info!("Starting service");
             self.state = State::Starting;
+
+            self.db.connect().await.inspect_err(|e| {
+                log::error!("Error connecting to database: {:?}", e);
+                self.state = State::Error;
+            })?;
+            //let session = self.db.read().await.session();
+            //self.ingestor.write().await.set_session(session);
+
             self.engine_client.send_config(self.config.clone()).await.inspect_err(|e| {
-                log::error!("Error sending config:g in application startup {:?}", e);
+                log::error!("Error sending config in application startup: {:?}", e);
                 self.state = State::Error;
             })?;
             self.engine_client.connect().await.inspect_err(|e| {
@@ -215,9 +232,12 @@ impl App {
         self.state == State::Started
     }
 
-    pub fn wait(&self){
+    pub async fn wait(&self){
         loop {
-            thread::sleep(Duration::from_millis(100));
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if self.state == State::Closed {
+                break;
+            }
         }
     }
 

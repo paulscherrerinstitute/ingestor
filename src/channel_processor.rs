@@ -1,6 +1,7 @@
+use std::ffi::IntoStringError;
 use bsread::{Bsread, EndpointEvent, EndpointState, EndpointDiag, Message, Pool, IOResult, IOError, ChannelConfig, ChannelData};
 use crate::Arguments;
-use std::sync::{Mutex, RwLock};
+use crate::ingestor::Ingestor;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::fs::OpenOptions;
 use std::io::{self, Write};
@@ -8,15 +9,18 @@ use std::path::PathBuf;
 use chrono::Local;
 use std::fs;
 use log::LevelFilter;
+use std::sync::{Arc};
+use tokio::sync::RwLock;
 
 pub struct ChannelProcessor {
     arguments:Arguments,
+    ingestor:Arc<Ingestor>,
 }
 
 
 impl ChannelProcessor {
-    pub fn new(arguments:Arguments) -> Self {
-        Self {arguments}
+    pub fn new(arguments:Arguments, ingestor:Arc<Ingestor>) -> Self {
+        Self {arguments, ingestor}
     }
 
     pub async fn process(&self, id: u64, tm: (u64, u64), config: ChannelConfig, data: Option<Vec<u8>>, header_changed: bool) {
@@ -30,8 +34,11 @@ impl ChannelProcessor {
             log::trace!("Processing Channel name:{} type:{:?} shape:{:?} [ID:{}]", config.name(), config.kind(), config.shape(), id);
         }
 
-        
-
+        if header_changed {
+            self.ingestor.create_table(config.name(), config.kind(), config.shape(), config.size()).await;
+        }
+        let (name, kind, shape) = config.into_parts();
+        self.ingestor.append_record(name, data).await;
     }
 
  

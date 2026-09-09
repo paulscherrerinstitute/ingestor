@@ -4,6 +4,8 @@ mod engine;
 mod processor;
 mod engine_client;
 mod channel_processor;
+mod db;
+mod ingestor;
 
 use log;
 use clap::{Arg, Command};
@@ -19,15 +21,18 @@ use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::channel;
+use crate::db::DB;
 use crate::engine::Engine;
 
 const DEFAULT_ID:&str = "Undefined";
 const DEFAULT_PORT:u32 = 15000;
+const DEFAULT_DB:&str = "127.0.0.1:9042";
 
 #[derive(Serialize, Clone)]
 pub struct Arguments {
     log_level: String,
     instance_id: String,
+    database:String,
     pool_size: usize,
     receivers: usize,
     debug:bool,
@@ -71,6 +76,14 @@ async fn main() {
                 .short('i')
                 .long("instance-id")
                 .help(format!("Application instance ID (default={})", DEFAULT_ID))
+                .num_args(1) // Expects one value
+                .required(false),
+        )
+        .arg(
+            Arg::new("Database")
+                .short('e')
+                .long("database")
+                .help(format!("Scylla database URL (default={})", DEFAULT_DB))
                 .num_args(1) // Expects one value
                 .required(false),
         )
@@ -214,6 +227,8 @@ async fn main() {
     };
     let instance_id  = matches.get_one::<String>("InstanceId").cloned().unwrap_or(DEFAULT_ID.to_string());
 
+    let database= matches.get_one::<String>("Database").cloned().unwrap_or(DEFAULT_DB.to_string());
+
     let config_path= matches.get_one::<String>("ConfigPath").cloned();
 
     let output_path= matches.get_one::<String>("OutputPath").cloned();
@@ -272,9 +287,10 @@ async fn main() {
         true
     };
 
-    let arguments = Arguments{instance_id, log_level, pool_size, receivers, debug, config_path, output_path, receive_hwm,
+    let arguments = Arguments{instance_id, log_level, database, pool_size, receivers, debug, config_path, output_path, receive_hwm,
         auto_start, concurrent, buffer_size, join_channels, disable_handshake, blocking_config};
-    let app = App::new(arguments.clone());
+
+    let app = App::new(arguments.clone()).await;
     let mut app = Arc::new(RwLock::new(app));
     let api = api::init(app.clone());
     let address = format!("0.0.0.0:{}", port);
