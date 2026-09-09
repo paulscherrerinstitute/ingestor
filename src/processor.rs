@@ -34,14 +34,14 @@ impl SourceInfo {
     }
 }
 pub struct Processor {
-    arguments:Arguments,
+    arguments:Arc<Arguments>,
     sources_info:Arc<RwLock<HashMap<String, SourceInfo>>>,
     channel_processor: Arc<ChannelProcessor>,
 }
 
 
 impl Processor {
-    pub fn new(arguments:Arguments, channel_processor: Arc<ChannelProcessor>) -> Self {
+    pub fn new(arguments:Arc<Arguments>, channel_processor: Arc<ChannelProcessor>) -> Self {
         Self {
             arguments,
             sources_info: Arc::new(RwLock::new(HashMap::new())),

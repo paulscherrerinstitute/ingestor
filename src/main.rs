@@ -287,8 +287,10 @@ async fn main() {
         true
     };
 
-    let arguments = Arguments{instance_id, log_level, database, pool_size, receivers, debug, config_path, output_path, receive_hwm,
-        auto_start, concurrent, buffer_size, join_channels, disable_handshake, blocking_config};
+    let arguments = Arc::new (
+        Arguments{instance_id, log_level, database, pool_size, receivers, debug, config_path, output_path, receive_hwm,
+            auto_start, concurrent, buffer_size, join_channels, disable_handshake, blocking_config}
+    );
 
     let app = App::new(arguments.clone()).await;
     let mut app = Arc::new(RwLock::new(app));

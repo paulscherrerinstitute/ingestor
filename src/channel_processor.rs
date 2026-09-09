@@ -13,13 +13,13 @@ use std::sync::{Arc};
 use tokio::sync::RwLock;
 
 pub struct ChannelProcessor {
-    arguments:Arguments,
+    arguments:Arc<Arguments>,
     ingestor:Arc<Ingestor>,
 }
 
 
 impl ChannelProcessor {
-    pub fn new(arguments:Arguments, ingestor:Arc<Ingestor>) -> Self {
+    pub fn new(arguments:Arc<Arguments>, ingestor:Arc<Ingestor>) -> Self {
         Self {arguments, ingestor}
     }
 

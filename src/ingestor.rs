@@ -5,13 +5,13 @@ use crate::{db  , DB};
 
 
 pub struct Ingestor {
-    arguments:Arguments,
+    arguments:Arc<Arguments>,
     db: Arc<DB>,
 }
 
 
 impl Ingestor {
-    pub fn new(arguments:Arguments, db:Arc<DB>) -> Self {
+    pub fn new(arguments:Arc<Arguments>, db:Arc<DB>) -> Self {
         Self { arguments, db }
     }
 

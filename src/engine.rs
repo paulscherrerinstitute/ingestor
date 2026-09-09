@@ -63,7 +63,7 @@ struct  SourceStats {
 }
 
 pub struct Engine {
-    arguments:Arguments,
+    arguments:Arc<Arguments>,
     contexts: Vec<Arc<Bsread>>,
     pools: Vec<Pool>,
     sources:Vec<Source>,
@@ -77,7 +77,7 @@ pub struct Engine {
 
 impl Engine {
 
-    pub fn new(arguments:Arguments,  handle:Handle, processor:Arc<Processor>) -> Self{
+    pub fn new(arguments:Arc<Arguments>,  handle:Handle, processor:Arc<Processor>) -> Self{
         let contexts = Vec::new();
         let pools = Vec::new();
         let sources = Vec::new();
@@ -90,7 +90,7 @@ impl Engine {
         }
     }
 
-    pub fn launch(arguments:Arguments, engine_rx:Receiver<EngineCommand>, handle:Handle, processor:Arc<Processor>) {
+    pub fn launch(arguments:Arc<Arguments>, engine_rx:Receiver<EngineCommand>, handle:Handle, processor:Arc<Processor>) {
         let engine = Engine::new(arguments, handle, processor);
         //std::thread::spawn(move || {
         tokio::spawn(async move {

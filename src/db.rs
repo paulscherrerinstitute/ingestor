@@ -15,13 +15,13 @@ use crate::ingestor::Ingestor;
 use tokio::sync::OnceCell;
 
 pub struct DB {
-    arguments:Arguments,
+    arguments:Arc<Arguments>,
     session: OnceCell<Session>,
 }
 
 impl DB {
 
-    pub fn new(arguments:Arguments) -> Self {
+    pub fn new(arguments:Arc<Arguments>) -> Self {
         Self { arguments, session:OnceCell::new() }
     }
 

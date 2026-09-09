@@ -116,7 +116,7 @@ pub struct Stats {
 
 
 pub struct App {
-    arguments:Arguments,
+    arguments:Arc<Arguments>,
     config:Config,
     state:State,
     timer_handle: Option<JoinHandle<()>>,
@@ -130,7 +130,7 @@ pub struct App {
 
 impl App {
     //pub async fn new(arguments:Arguments) -> IOResult<Self> {
-    pub async fn new(arguments:Arguments) -> Self {
+    pub async fn new(arguments:Arc<Arguments>) -> Self {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
         log::set_max_level(LevelFilter::from_str(&arguments.log_level).unwrap_or(LevelFilter::Info));
 
@@ -245,7 +245,7 @@ impl App {
         self.state.clone()
     }
     pub fn arguments(&self) -> Arguments {
-        self.arguments.clone()
+        (*self.arguments).clone()
     }
 
     pub fn config(&self) -> Config {
