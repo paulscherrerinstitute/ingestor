@@ -6,29 +6,47 @@ use scylla::observability::metrics::Metrics;
 use serde::Serialize;
 use std::io::ErrorKind;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::OnceCell;
 
 pub struct DB {
     arguments: Arc<Arguments>,
     session: OnceCell<Session>,
+    enabled: AtomicBool,
 }
 
 impl DB {
     pub fn new(arguments: Arc<Arguments>) -> Self {
-        Self { arguments, session: OnceCell::new() }
+        Self { arguments, session: OnceCell::new(), enabled: AtomicBool::new(true) }
     }
 
     async fn create_session(arguments: &Arguments) -> IOResult<Session> {
         match SessionBuilder::new().known_node(&arguments.database).build().await {
             Ok(session) => {
-                log::info!("Connected to database {}", &arguments.database);
+                log::info!("Database session created for {}", &arguments.database);
+
+                if let Err(e) = session.query_unpaged("SELECT now() FROM system.local", &[]).await{
+                    log::error!("Error connecting to database {}: {}", &arguments.database, e);
+                    return Err(IOError::new(ErrorKind::ConnectionRefused, format!("Error connecting to database: {}", e)));
+                } else {
+                    log::info!("Connected to database {}", &arguments.database);
+                }
+
                 Ok(session)
             }
             Err(e) => {
-                log::error!("Failed to connect to database {}: {}",  &arguments.database, e);
+                log::error!("Failed creating session on database {}: {}",  &arguments.database, e);
                 Err(IOError::new(ErrorKind::ConnectionRefused, format!("Failed to build  session: {}", e)))
             }
         }
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
     }
 
     pub async fn connect(&self) -> IOResult<()> {
@@ -55,7 +73,11 @@ impl DB {
     }
 
     pub fn session(&self) -> Option<&Session> {
-        self.session.get()
+        if self.is_enabled() {
+            self.session.get()
+        } else {
+            None
+        }
     }
 
 

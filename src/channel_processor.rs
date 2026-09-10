@@ -32,10 +32,14 @@ impl ChannelProcessor {
         }
 
         if header_changed {
-            self.ingestor.create_table(config.name(), config.kind(), config.shape(), config.size()).await;
+            if let Err(e) = self.ingestor.create_table(config.name(), config.kind(), config.shape(), config.size()).await{
+                log::error!("Error creating table {} {} {:?} {}: {}", config.name(), config.kind(), config.shape(), config.size(), e);
+            }
         }
         let (name, kind, shape) = config.into_parts();
-        self.ingestor.append_record(name, data).await;
+        if let Err(e) = self.ingestor.append_record(name, id, tm, data).await{
+            log::error!("Error appending record for id {}: {}", id, e);
+        }
     }
 
  

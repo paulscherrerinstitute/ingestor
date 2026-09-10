@@ -20,10 +20,11 @@ use tokio::task::JoinHandle;
 
 
 
-#[derive(Serialize, PartialEq, Clone)]
+#[derive(Serialize, Debug, PartialEq, Clone)]
 pub enum State {
     Starting,
     Started,
+    Paused,
     Stopping,
     Stopped,
     Error,
@@ -98,6 +99,22 @@ impl App {
         App {arguments, config, engine_client, processor, channel_processor, db, ingestor, state:State::Starting, timer_handle: None}
     }
 
+    fn assertState(&self, state:State) -> IOResult<()> {
+        if self.state != state {
+            Err(IOError::new(ErrorKind::NotFound, format!("Invalid state: {:?}", &self.state)))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn assertStateNot(&self, state:State) -> IOResult<()> {
+        if self.state == state {
+            Err(IOError::new(ErrorKind::NotFound, format!("Invalid state: {:?}", &self.state)))
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn process_resources() -> (f32, u64, usize) {
         let mut system = System::new();
         let pid = Pid::from_u32(std::process::id());
@@ -133,9 +150,15 @@ impl App {
         Ok(())
     }
 
+    pub async fn pause(&mut self) -> IOResult<()> {
+        self.assertState(State::Started)?;
+        self.db.set_enabled(false);
+        self.state = State::Paused;
+        Ok(())
+    }
 
     pub async fn start(&mut self) -> IOResult<()> {
-        if (!self.is_started()){
+        if !self.is_started(){
             log::info!("Starting service");
             self.state = State::Starting;
 
@@ -164,13 +187,16 @@ impl App {
             });
             self.timer_handle = Some(timer_handle);
             self.state = State::Started;
+        } else if self.state == State::Paused {
+            self.db.set_enabled(true);
+            self.state = State::Started;
         }
         Ok(())
     }
 
 
     pub fn is_started(& self) -> bool {
-        self.state == State::Started
+        self.state == State::Started || self.state == State::Paused
     }
 
     pub async fn wait(&self){

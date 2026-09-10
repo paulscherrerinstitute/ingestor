@@ -125,6 +125,13 @@ async fn stop(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, App
     Ok(Response::ok())
 }
 
+async fn pause(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
+    log::info!("API call: pause");
+    let mut app = app.write().await;
+    app.pause().await?;
+    Ok(Response::ok())
+}
+
 //curl -X PUT --json @cfg.json http://localhost:15000/api/config
 //curl -X PUT --json '{"endpoints":["tcp://localhost:12000","tcp://localhost:12001"]}' http://localhost:15000/api/config
 async fn set_config(State(app): State<Arc<RwLock<App>>>,Json(config): Json<Config>,) -> Result<Json<Response>, AppError> {
@@ -164,6 +171,7 @@ pub fn init(app:Arc<RwLock<App>>) -> Router {
         .route("/log-level", get(log_level))
         .route("/start", post(start))
         .route("/stop", post(stop))
+        .route("/pause", post(pause))
         .route("/reset_stats", post(reset_stats))
         .route("/config", put(set_config))
         .route("/log-level", put(set_log_level));
