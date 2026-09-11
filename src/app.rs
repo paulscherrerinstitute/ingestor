@@ -151,7 +151,7 @@ impl App {
         Ok(())
     }
     fn set_state(&mut self, state: State) {
-        log::info!("Setting state to {:?}", &self.state);
+        log::info!("Setting state to {:?}", state);
         self.state = state;
     }
 

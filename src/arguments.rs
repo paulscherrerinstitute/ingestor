@@ -12,6 +12,7 @@ pub const CONFIG_FILE_PATH: &str = concat!("/var/lib/", env!("CARGO_PKG_NAME"), 
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Arguments {
     pub log_level: String,
     pub instance_id: String,
