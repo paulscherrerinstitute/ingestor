@@ -31,11 +31,17 @@ impl SourceInfo {
         SourceInfo{last_id: 0, last_received: 0, age: 0, channels: Vec::new()}
     }
 }
+
+pub struct ProcessorStats {
+    pending: AtomicU32,
+    inserted: AtomicU32,
+}
+
 pub struct Processor {
     arguments:Arc<Arguments>,
     sources_info:Arc<RwLock<HashMap<String, SourceInfo>>>,
     channel_processor: Arc<ChannelProcessor>,
-    pending_tasks: Arc<AtomicU32>,
+    stats: Arc<ProcessorStats>,
 }
 
 
@@ -45,7 +51,7 @@ impl Processor {
             arguments,
             sources_info: Arc::new(RwLock::new(HashMap::new())),
             channel_processor,
-            pending_tasks: Arc::new(AtomicU32::new(0)),
+            stats: Arc::new(ProcessorStats{pending:AtomicU32::new(0), inserted:AtomicU32::new(0)}),
         }
     }
 
@@ -58,36 +64,39 @@ impl Processor {
             let header_changed = message.header_changed();
             let (channels, data) = message.into_parts();
             let mut index = 0;
-            //println!("Message {} from {:?} changed {}", id, &endpoint, header_changed);
 
             //for (channel, (_key, value)) in channels.into_iter().zip(data) {
             //    self.process_channel(id,tm,channel.into_config(),value,header_changed,).await;
             //}
-
-
+            
             if self.arguments.join_channels {
+                let stats = Arc::clone(&self.stats);
                 let futures = channels.into_iter().zip(data)
                     .filter_map(|(channel, (_key, value))| {
                         let config = channel.into_config();
-                        match Self::as_bytes(&config, value) {
+                        let ret = match Self::as_bytes(&config, value) {
                             Ok(data) => Some(
                                 self.channel_processor.process(id, tm, config, data,header_changed,)
                             ),
                             Err(err) => {None}
-                        }
+                        };
+                        stats.inserted.fetch_add(1, Ordering::Relaxed);
+                        ret
                     });
                 join_all(futures).await;
+
             } else {
                 for (channel, (_key, value)) in channels.into_iter().zip(data) {
                     let channel_processor = Arc::clone(&self.channel_processor);
-                    let pending = Arc::clone(&self.pending_tasks);
-                    pending.fetch_add(1, Ordering::Relaxed);
+                    let stats = Arc::clone(&self.stats);
+                    stats.pending.fetch_add(1, Ordering::Relaxed);
                     tokio::spawn(async move {
                         let config = channel.into_config();
                         if let Ok(data) = Self::as_bytes(&config, value) {
                             channel_processor.process(id, tm, config, data, header_changed).await;
                         }
-                        pending.fetch_sub(1, Ordering::Relaxed);
+                        stats.pending.fetch_sub(1, Ordering::Relaxed);
+                        stats.inserted.fetch_add(1, Ordering::Relaxed);
                     });
                 }
             }
@@ -182,10 +191,15 @@ impl Processor {
     }
 
     pub fn pending(&self) -> u32 {
-        self.pending_tasks.load(Ordering::Relaxed)
+        self.stats.pending.load(Ordering::Relaxed)
+    }
+
+    pub fn inserted(&self) -> u32 {
+        self.stats.inserted.load(Ordering::Relaxed)
     }
 
     pub fn reset_stats(&self) {
-        self.pending_tasks.store(0, Ordering::Relaxed);
+        self.stats.inserted.store(0, Ordering::Relaxed);
+        self.stats.pending.store(0, Ordering::Relaxed);
     }
 }

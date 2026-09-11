@@ -408,6 +408,7 @@ impl Engine {
         let sources_stats = self.source_stats();
         let message_stats = self.message_stats();
         let pending = self.processor.pending();
+        let inserted = self.processor.inserted();
         let processing = self.processing();
         let processed = self.processed();
         Stats {
@@ -417,6 +418,7 @@ impl Engine {
             processing,
             processed,
             pending,
+            inserted,
             duplicated_sources: self.processing_stats.duplicated_sources.load(Ordering::Relaxed),
             disabled_sources: self.processing_stats.disabled_sources.load(Ordering::Relaxed),
             connected_sources:sources_stats.connected, connecting_sources:sources_stats.connecting, disconnected_sources:sources_stats.disconnected,
@@ -424,6 +426,7 @@ impl Engine {
             errors_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.errors_rate),
             dropped_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.dropped_rate),
             processed_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.processed_rate),
+            inserted_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.inserted_rate),
             max_pending: self.last_stats.as_ref().map_or(pending, |stats| max(pending, stats.max_pending)),
             max_processing: self.last_stats.as_ref().map_or(processing, |stats| max(processing, stats.max_processing)),
             cpu, memory, files,
@@ -497,7 +500,6 @@ impl Engine {
         self.processing_stats.processed.load(Ordering::Relaxed)
     }
 
-    pub fn pending(&self) -> u32 {self.processor.pending()}
 
     //Every 10s
     pub fn on_timer(&mut self)  {
@@ -506,25 +508,27 @@ impl Engine {
         let dropped =  self.dropped();
         let processing =self.processing();
         let processed = self.processed();
-        let pending = self.pending();
+        let pending = self.processor.pending();
+        let inserted = self.processor.inserted();
 
-        let (received_rate, errors_rate, dropped_rate, processed_rate, max_pending, max_processing) = if let Some(last_stats) = self.last_stats.as_ref() {
+        let (received_rate, errors_rate, dropped_rate, processed_rate, inserted_rate, max_pending, max_processing) = if let Some(last_stats) = self.last_stats.as_ref() {
             let new_received = if received < last_stats.received{received} else {received - last_stats.received};
             let new_errors = if errors < last_stats.errors{errors} else {errors - last_stats.errors};
             let new_dropped = if dropped < last_stats.dropped{dropped} else {dropped - last_stats.dropped};
             let new_processed = if processed < last_stats.processed{processed} else {processed - last_stats.processed};
+            let new_inserted = if inserted < last_stats.inserted{inserted} else {inserted - last_stats.inserted};
             let new_max_pending = max (pending, last_stats.max_pending);
             let new_max_processing= max (processing, last_stats.max_processing);
-            ((new_received as f32) / 10.0, (new_errors as f32) / 10.0, (new_dropped as f32) / 10.0, (new_processed as f32) / 10.0,
+            ((new_received as f32) / 10.0, (new_errors as f32) / 10.0, (new_dropped as f32) / 10.0, (new_processed as f32) / 10.0, (new_inserted as f32) / 10.0,
              new_max_pending, new_max_processing)
         } else {
-            (0.0, 0.0, 0.0, 0.0, pending, processing)
+            (0.0, 0.0, 0.0, 0.0, 0.0, pending, processing)
         };
-        self.last_stats = Some(Stats{
+        self.last_stats = Some( Stats{
             received,errors, dropped, processing, processed,
-            received_rate, errors_rate, dropped_rate, processed_rate,
-            max_pending, max_processing,
-            duplicated_sources:0, disabled_sources:0, pending:0,
+            received_rate, errors_rate, dropped_rate, processed_rate, inserted_rate,
+            max_pending, max_processing, pending, inserted,
+            duplicated_sources:0, disabled_sources:0,
             connected_sources:0, connecting_sources: 0, disconnected_sources: 0,
             cpu:0.0, memory:0, files:0
         });
