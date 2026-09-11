@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::io::{self, Write};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering, AtomicUsize};
 use std::sync::{Mutex, RwLock};
 
 
@@ -35,6 +35,7 @@ pub struct Processor {
     arguments:Arc<Arguments>,
     sources_info:Arc<RwLock<HashMap<String, SourceInfo>>>,
     channel_processor: Arc<ChannelProcessor>,
+    pending_tasks: Arc<AtomicU32>,
 }
 
 
@@ -44,6 +45,7 @@ impl Processor {
             arguments,
             sources_info: Arc::new(RwLock::new(HashMap::new())),
             channel_processor,
+            pending_tasks: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -78,11 +80,14 @@ impl Processor {
             } else {
                 for (channel, (_key, value)) in channels.into_iter().zip(data) {
                     let channel_processor = Arc::clone(&self.channel_processor);
+                    let pending = Arc::clone(&self.pending_tasks);
+                    pending.fetch_add(1, Ordering::Relaxed);
                     tokio::spawn(async move {
                         let config = channel.into_config();
                         if let Ok(data) = Self::as_bytes(&config, value) {
                             channel_processor.process(id, tm, config, data, header_changed).await;
                         }
+                        pending.fetch_sub(1, Ordering::Relaxed);
                     });
                 }
             }
@@ -174,5 +179,13 @@ impl Processor {
             None => {Err(IOError::new(ErrorKind::InvalidInput, format!("Source not found: {}", source)))},
             Some(info) => {Ok(info.clone())}
         }
+    }
+
+    pub fn pending(&self) -> u32 {
+        self.pending_tasks.load(Ordering::Relaxed)
+    }
+
+    pub fn reset_stats(&self) {
+        self.pending_tasks.store(0, Ordering::Relaxed);
     }
 }

@@ -6,6 +6,7 @@ use bsread::receiver::{AsyncExecution, MessageStats};
 use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOResult, Pool, ReceivedMessage, SocketConfig, SocketType};
 use crossbeam_channel;
 use std::collections::{HashMap, HashSet};
+use std::cmp::max;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
@@ -406,13 +407,16 @@ impl Engine {
 
         let sources_stats = self.source_stats();
         let message_stats = self.message_stats();
-
+        let pending = self.processor.pending();
+        let processing = self.processing();
+        let processed = self.processed();
         Stats {
             received: message_stats.messages,
             errors: message_stats.errors,
             dropped:  message_stats.dropped,
-            processing:self.processing(),
-            processed: self.processed(),
+            processing,
+            processed,
+            pending,
             duplicated_sources: self.processing_stats.duplicated_sources.load(Ordering::Relaxed),
             disabled_sources: self.processing_stats.disabled_sources.load(Ordering::Relaxed),
             connected_sources:sources_stats.connected, connecting_sources:sources_stats.connecting, disconnected_sources:sources_stats.disconnected,
@@ -420,6 +424,8 @@ impl Engine {
             errors_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.errors_rate),
             dropped_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.dropped_rate),
             processed_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.processed_rate),
+            max_pending: self.last_stats.as_ref().map_or(pending, |stats| max(pending, stats.max_pending)),
+            max_processing: self.last_stats.as_ref().map_or(processing, |stats| max(processing, stats.max_processing)),
             cpu, memory, files,
         }
     }
@@ -430,6 +436,12 @@ impl Engine {
         }
         self.processing_stats.processed.store(0, Ordering::Relaxed);
         self.processing_stats.processing.store(0, Ordering::Relaxed);
+        self.processing_stats.processing.store(0, Ordering::Relaxed);
+        if let Some(last_stats) = self.last_stats.as_mut() {
+            last_stats.max_pending = 0;
+            last_stats.max_processing = 0;
+        }
+        self.processor.reset_stats();
     }
 
     pub fn messages(&self) -> u32 {
@@ -485,6 +497,8 @@ impl Engine {
         self.processing_stats.processed.load(Ordering::Relaxed)
     }
 
+    pub fn pending(&self) -> u32 {self.processor.pending()}
+
     //Every 10s
     pub fn on_timer(&mut self)  {
         let received = self. messages();
@@ -492,20 +506,25 @@ impl Engine {
         let dropped =  self.dropped();
         let processing =self.processing();
         let processed = self.processed();
+        let pending = self.pending();
 
-        let (received_rate, errors_rate, dropped_rate, processed_rate) = if let Some(last_stats) = self.last_stats.as_ref() {
+        let (received_rate, errors_rate, dropped_rate, processed_rate, max_pending, max_processing) = if let Some(last_stats) = self.last_stats.as_ref() {
             let new_received = if received < last_stats.received{received} else {received - last_stats.received};
             let new_errors = if errors < last_stats.errors{errors} else {errors - last_stats.errors};
             let new_dropped = if dropped < last_stats.dropped{dropped} else {dropped - last_stats.dropped};
             let new_processed = if processed < last_stats.processed{processed} else {processed - last_stats.processed};
-            ((new_received as f32) / 10.0, (new_errors as f32) / 10.0, (new_dropped as f32) / 10.0, (new_processed as f32) / 10.0)
+            let new_max_pending = max (pending, last_stats.max_pending);
+            let new_max_processing= max (processing, last_stats.max_processing);
+            ((new_received as f32) / 10.0, (new_errors as f32) / 10.0, (new_dropped as f32) / 10.0, (new_processed as f32) / 10.0,
+             new_max_pending, new_max_processing)
         } else {
-            (0.0, 0.0, 0.0, 0.0)
+            (0.0, 0.0, 0.0, 0.0, pending, processing)
         };
         self.last_stats = Some(Stats{
             received,errors, dropped, processing, processed,
             received_rate, errors_rate, dropped_rate, processed_rate,
-            duplicated_sources:0, disabled_sources:0,
+            max_pending, max_processing,
+            duplicated_sources:0, disabled_sources:0, pending:0,
             connected_sources:0, connecting_sources: 0, disconnected_sources: 0,
             cpu:0.0, memory:0, files:0
         });
