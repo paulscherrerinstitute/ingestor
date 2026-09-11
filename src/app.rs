@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use scylla::response::query_result::QueryResult;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::task::JoinHandle;
 
@@ -165,8 +166,6 @@ impl App {
         Ok(())
     }
 
-
-
     pub async fn start(&mut self) -> IOResult<()> {
         if !self.is_started(){
             log::info!("Starting service");
@@ -268,6 +267,10 @@ impl App {
                 Ok(metrics)
             }
         }
+    }
+
+    pub fn db(&self) -> Arc<DB> {
+        self.db.clone()
     }
 
 

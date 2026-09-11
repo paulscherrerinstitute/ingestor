@@ -7,7 +7,16 @@ use serde::Serialize;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use scylla::errors::MetadataError::Keyspaces;
+use scylla::response::query_result::QueryResult;
+use scylla::statement::prepared::PreparedStatement;
 use tokio::sync::OnceCell;
+
+
+#[derive(scylla::DeserializeRow)]
+struct TableName {
+    table_name: String,
+}
 
 pub struct DB {
     arguments: Arc<Arguments>,
@@ -16,6 +25,8 @@ pub struct DB {
 }
 
 impl DB {
+    pub const KEYSPACE: &str = "databuffer";
+
     pub fn new(arguments: Arc<Arguments>) -> Self {
         Self { arguments, session: OnceCell::new(), enabled: AtomicBool::new(true) }
     }
@@ -32,6 +43,16 @@ impl DB {
                     log::info!("Connected to database {}", &arguments.database);
                 }
 
+                let query = format!(
+                    "CREATE KEYSPACE IF NOT EXISTS {} \
+                        WITH REPLICATION = {{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}}",
+                    Self::KEYSPACE
+                );
+
+                if let Err(e) =  session.query_unpaged(query, &[]).await{
+                    log::error!("Error creating keyspace {}: {}", Self::KEYSPACE, e);
+                }
+
                 Ok(session)
             }
             Err(e) => {
@@ -40,6 +61,18 @@ impl DB {
             }
         }
     }
+
+    pub async fn query(&self, query:&str) -> IOResult<QueryResult>{
+        if let Some(session) = self.session() {
+            let ret = session.query_unpaged(query, &[]).await.
+                map_err(|e| {IOError::new(ErrorKind::Other,format!("Error performing query {}: {}", query,  e))})?;
+            Ok(ret)
+        } else {
+            Err(IOError::new(ErrorKind::NotFound, "No session found"))
+        }
+
+    }
+
 
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Relaxed);
@@ -73,6 +106,10 @@ impl DB {
     }
 
     pub fn session(&self) -> Option<&Session> {
+        self.session.get()
+    }
+
+    pub fn enabled_session(&self) -> Option<&Session> {
         if self.is_enabled() {
             self.session.get()
         } else {
@@ -80,6 +117,68 @@ impl DB {
         }
     }
 
+    pub async fn tables(&self) ->  IOResult<Vec<String>> {
+        let query = format!( "SELECT table_name \
+                                     FROM system_schema.tables \
+                                     WHERE keyspace_name = '{}'", DB::KEYSPACE);
+
+        let result = self.query(&query).await?;
+
+        let rows_result = result.into_rows_result()
+            .map_err(|e| {
+                IOError::new(ErrorKind::Other, format!("Error decoding result: {}", e))
+            })?;
+
+        let rows = rows_result
+            .rows::<TableName>()
+            .map_err(|e| {
+                IOError::new(ErrorKind::Other, format!("Error decoding rows: {}", e))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                IOError::new(ErrorKind::Other, format!("Error decoding row: {}", e))
+            })?;
+        Ok(rows.into_iter().map(|r| r.table_name).collect())
+    }
+
+
+    pub async fn create_insert_statement(&self, name: &str) -> IOResult<PreparedStatement> {
+        let session = self.session()
+            .ok_or_else(|| IOError::new(ErrorKind::NotFound, "No session found"))?;
+        let query = self.insert_query(name);
+        let statement = session.prepare(query).await
+            .map_err(|e| {IOError::new(ErrorKind::Other,format!("Error preparing insert for {}: {}", name, e))})?;
+        Ok(statement)
+    }
+
+
+    pub fn creation_query(&self, name: &str) -> String {
+        format!(
+            r#"
+                CREATE TABLE IF NOT EXISTS "{}"."{}" (
+                    id bigint PRIMARY KEY,
+                    timestamp_sec bigint,
+                    timestamp_nsec bigint,
+                    data blob
+                )
+                "#,
+            DB::KEYSPACE,
+            name.replace('"', "\"\"")
+        )
+    }
+
+
+    pub fn insert_query(&self, name: &str) -> String {
+        format!(
+            r#"
+                INSERT INTO "{}"."{}"
+                    (id, timestamp_sec, timestamp_nsec, data)
+                VALUES (?, ?, ?, ?)
+            "#,
+            DB::KEYSPACE,
+            name.replace('"', "\"\"")
+        )
+    }
 
     pub fn metrics(&self) -> Option<ScyllaMetrics>{
         Some(ScyllaMetrics::from_metrics(self.session()?.get_metrics()))

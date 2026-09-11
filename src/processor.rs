@@ -157,13 +157,11 @@ impl Processor {
     }
 
     pub async fn on_endpoint_state(&self, endpoint: String, state: EndpointState) {
-        let timestamp = chrono::Local::now().format("%H:%M:%S");
-        println!("{} - Endpoint {} state: {:?}", timestamp, endpoint, state);
+        log::info!("Endpoint {} state: {:?}", endpoint, state);
     }
 
     pub async fn on_endpoint_diag(&self, endpoint: String, diag: EndpointDiag, id: Option<u64>) {
-        let timestamp = chrono::Local::now().format("%H:%M:%S");
-        println!("{} - Endpoint {} id {:?} diag: {:?}", timestamp, endpoint, id, diag);
+        log::info!("Endpoint {} id {:?} diag: {:?}", endpoint, id, diag);
     }
 
 

@@ -4,11 +4,13 @@ use crate::db::ScyllaMetrics;
 use crate::processor::SourceInfo;
 use crate::Arguments;
 use axum::{Json, Router, extract::{Path, State}, http::StatusCode, response::IntoResponse, routing::get, routing::post, routing::put};
-use bsread::EndpointDiag;
+use bsread::{EndpointDiag, IOError};
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::sync::Arc;
+use scylla::response::query_result::QueryResult;
 use tokio::sync::RwLock;
 
 const API_PREFIX: &str = "/api";
@@ -132,6 +134,22 @@ async fn pause(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, Ap
     Ok(Response::ok())
 }
 
+async fn query(State(app): State<Arc<RwLock<App>>>,Json(query): Json<String>) -> Result<Json<String>, AppError> {
+    //Release lock befor query
+    let db = {
+       app.read().await.db().clone()
+    };
+    Ok(Json(format!("{:?}", db.query(&query).await?)))
+}
+
+async fn tables(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Vec<String>>, AppError> {
+    //Release lock befor query
+    let db = {
+        app.read().await.db().clone()
+    };
+    Ok(Json(db.tables().await?))
+}
+
 //curl -X PUT --json @cfg.json http://localhost:15000/api/config
 //curl -X PUT --json '{"endpoints":["tcp://localhost:12000","tcp://localhost:12001"]}' http://localhost:15000/api/config
 async fn set_config(State(app): State<Arc<RwLock<App>>>,Json(config): Json<Config>,) -> Result<Json<Response>, AppError> {
@@ -169,6 +187,8 @@ pub fn init(app:Arc<RwLock<App>>) -> Router {
         .route("/sources", get(sources))
         .route("/source/{*address}", get(source))
         .route("/log-level", get(log_level))
+        .route("/tables", get(tables))
+        .route("/query", post(query))
         .route("/start", post(start))
         .route("/stop", post(stop))
         .route("/pause", post(pause))
