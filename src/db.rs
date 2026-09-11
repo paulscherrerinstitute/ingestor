@@ -27,7 +27,7 @@ impl DB {
 
                 if let Err(e) = session.query_unpaged("SELECT now() FROM system.local", &[]).await{
                     log::error!("Error connecting to database {}: {}", &arguments.database, e);
-                    return Err(IOError::new(ErrorKind::ConnectionRefused, format!("Error connecting to database: {}", e)));
+                    //return Err(IOError::new(ErrorKind::ConnectionRefused, format!("Error connecting to database: {}", e)));
                 } else {
                     log::info!("Connected to database {}", &arguments.database);
                 }

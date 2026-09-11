@@ -386,7 +386,9 @@ impl Engine {
     pub fn diags(& self) -> HashMap<String, HashMap<EndpointDiag, u32>>{
         let mut diagnostics = HashMap::new();
         for pool in self.pools.iter() {
-            diagnostics.extend(pool.diagnostics());
+            for (endpoint, diag) in pool.diagnostics().iter(){
+                diagnostics.insert(endpoint.clone(), diag.as_map());
+            }
         }
         diagnostics
     }

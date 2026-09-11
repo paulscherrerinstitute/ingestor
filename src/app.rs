@@ -140,42 +140,52 @@ impl App {
 
     pub async fn stop(& mut self) -> IOResult<()> {
         log::info!("Stpping service");
-        self.state = State::Stopping;
+        self.set_state(State::Stopping);
         if let Some(handle) = self.timer_handle.take() {
             handle.abort();
             self.timer_handle = None;
         }
         self.engine_client.disconnect().await?;
-        self.state = State::Stopped;
+        self.set_state(State::Stopped);
         Ok(())
+    }
+    fn set_state(&mut self, state: State) {
+        log::info!("Setting state to {:?}", &self.state);
+        self.state = state;
     }
 
     pub async fn pause(&mut self) -> IOResult<()> {
         self.assertState(State::Started)?;
         self.db.set_enabled(false);
-        self.state = State::Paused;
+        self.set_state(State::Paused);
         Ok(())
     }
+    pub fn set_db_enabled(&mut self, enabled:bool) -> IOResult<()> {
+        self.db.set_enabled(enabled);
+        Ok(())
+    }
+
+
 
     pub async fn start(&mut self) -> IOResult<()> {
         if !self.is_started(){
             log::info!("Starting service");
-            self.state = State::Starting;
+            self.set_state(State::Starting);
 
             self.db.connect().await.inspect_err(|e| {
                 log::error!("Error connecting to database: {:?}", e);
-                self.state = State::Error;
+                self.set_state(State::Error);
             })?;
             //let session = self.db.read().await.session();
             //self.ingestor.write().await.set_session(session);
 
             self.engine_client.send_config(self.config.clone()).await.inspect_err(|e| {
                 log::error!("Error sending config in application startup: {:?}", e);
-                self.state = State::Error;
+                self.set_state(State::Error);
             })?;
             self.engine_client.connect().await.inspect_err(|e| {
                 log::error!("Error connecting in application startup: {:?}", e);
-                self.state = State::Error;
+                self.set_state(State::Error);
             })?;
             let engine_client = self.engine_client.clone();
             let timer_handle  = tokio::spawn(async move {
@@ -186,10 +196,10 @@ impl App {
                 }
             });
             self.timer_handle = Some(timer_handle);
-            self.state = State::Started;
+            self.set_state(State::Started);
         } else if self.state == State::Paused {
             self.db.set_enabled(true);
-            self.state = State::Started;
+            self.set_state(State::Started);
         }
         Ok(())
     }
@@ -261,9 +271,8 @@ impl App {
     }
 
 
-
     pub fn close(&mut self) -> IOResult<()> {
-        self.state = State::Closed;
+        self.set_state(State::Closed);
         Ok(())
     }
 }

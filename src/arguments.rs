@@ -22,13 +22,14 @@ pub struct Arguments {
     pub debug:bool,
     pub config_path:PathBuf,
     pub output_path:Option<PathBuf>,
-    pub auto_start:bool,
+    pub start:bool,
     pub concurrent:bool,
     pub buffer_size: usize,
     pub receive_hwm: i32,
     pub disable_handshake:bool,
     pub join_channels:bool,
     pub blocking_config:bool,
+    pub pause:bool,
 }
 
 impl Default for Arguments {
@@ -43,13 +44,14 @@ impl Default for Arguments {
             debug: false,
             config_path: PathBuf::from(CONFIG_FILE_PATH),
             output_path: None,
-            auto_start: false,
+            start: false,
             concurrent: false,
             buffer_size: 100,
             receive_hwm: 1000,
             disable_handshake: false,
             join_channels: true,
             blocking_config: true,
+            pause: false,
         }
     }
 
@@ -90,7 +92,7 @@ impl Arguments {
 #[derive(Parser, Debug)]
 #[command(name = env!("CARGO_PKG_NAME"), version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"), about = env!("CARGO_PKG_DESCRIPTION"))]
 pub struct Cli {
-    #[arg(short = 'l', long , value_name = "LOG", help = "Log level")]
+    #[arg(short = 'l', long ,  help = "Log level")]
     pub log_level: Option<String>,
 
     #[arg(short = 'i', long, help = "Application instance ID")]
@@ -99,7 +101,7 @@ pub struct Cli {
     #[arg(short = 'e', long, help = "Scylla database URL")]
     pub database: Option<String>,
 
-    #[arg(short = 'p', long, value_name = "PORT", help = "Port of the API")]
+    #[arg(short = 'p', long,  help = "Port of the API")]
     pub port: Option<u32>,
 
     #[arg(short = 'd', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Debug flag")]
@@ -118,7 +120,7 @@ pub struct Cli {
     pub output_path: Option<PathBuf>,
 
     #[arg(short = 'a', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Auto-start connections")]
-    pub auto_start: Option<bool>,
+    pub start: Option<bool>,
 
     #[arg(short = 't', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Does not order sequentially messages from each endpoint")]
     pub concurrent: Option<bool>,
@@ -138,7 +140,11 @@ pub struct Cli {
     #[arg(short = 'k', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Configuration commands are blocking")]
     pub blocking_config: Option<bool>,
 
-    #[arg(short = 'z', long, value_name = "FILE", help = "Path to the application arguments TOML file")]
+    #[arg(long , action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Start the application in paused state - no database access")]
+    pub pause: Option<bool>,
+
+    // Only en command-line, not present on the file
+    #[arg(long, help = "Path to the application arguments TOML file")]
     pub args_file: Option<PathBuf>,
 }
 
@@ -180,8 +186,8 @@ impl Cli {
             arguments.output_path = Some(value);
         }
 
-        if let Some(value) = self.auto_start {
-            arguments.auto_start = value;
+        if let Some(value) = self.start {
+            arguments.start = value;
         }
 
         if let Some(value) = self.concurrent {
@@ -206,6 +212,9 @@ impl Cli {
 
         if let Some(value) = self.blocking_config {
             arguments.blocking_config = value;
+        }
+        if let Some(value) = self.pause {
+            arguments.pause = value;
         }
     }
 }

@@ -40,9 +40,17 @@ async fn main() {
     let api = api::init(app.clone());
     let address = format!("0.0.0.0:{}", arguments.port);
     let listener = tokio::net::TcpListener::bind(address).await.unwrap();
-    log::info!("REST API listening on {}", listener.local_addr().unwrap());
-    if arguments.auto_start {
-        app.write().await.start().await.unwrap();
+
+    if arguments.pause{
+        app.write().await.set_db_enabled(false);
     }
+    if arguments.start {
+        app.write().await.start().await.unwrap();
+        if arguments.pause{
+            app.write().await.pause().await.unwrap();
+        }
+    }
+
+    log::info!("REST API listening on {}", listener.local_addr().unwrap());
     axum::serve(listener, api).await.unwrap();
 }
