@@ -36,8 +36,9 @@ impl Ingestor {
             let id = i64::try_from(id).map_err(|e| {IOError::new(ErrorKind::Other,format!("Error converting id {}: {}", id, e))})?;
             let timestamp_sec = i64::try_from(tm.0).map_err(|e| {IOError::new(ErrorKind::Other,format!("Error converting tm {:?}: {}", tm, e))})?;
             let timestamp_nsec = i64::try_from(tm.1).map_err(|e| {IOError::new(ErrorKind::Other,format!("Error converting tm {:?}: {}", tm, e))})?;
-
-            match self.insert_statements.read().await.get(&name){
+            let insert_statement = self.insert_statements.read().await.get(&name).cloned();
+            //Lock released
+            match insert_statement{
                 None => {
                     log::warn!("Insert statement with name {} not found", &name);
                     let query = self.db.insert_query(&name);
