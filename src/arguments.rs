@@ -50,7 +50,7 @@ impl Default for Arguments {
             buffer_size: 100,
             receive_hwm: 1000,
             disable_handshake: false,
-            join_channels: false,
+            join_channels: true,
             blocking_config: true,
             pause: false,
         }

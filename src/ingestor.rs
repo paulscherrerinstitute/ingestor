@@ -37,7 +37,7 @@ impl Ingestor {
             let timestamp_sec = i64::try_from(tm.0).map_err(|e| {IOError::new(ErrorKind::Other,format!("Error converting tm {:?}: {}", tm, e))})?;
             let timestamp_nsec = i64::try_from(tm.1).map_err(|e| {IOError::new(ErrorKind::Other,format!("Error converting tm {:?}: {}", tm, e))})?;
 
-            match self.insert_statements.write().await.get(&name){
+            match self.insert_statements.read().await.get(&name){
                 None => {
                     log::warn!("Insert statement with name {} not found", &name);
                     let query = self.db.insert_query(&name);
@@ -48,7 +48,7 @@ impl Ingestor {
                     session.execute_unpaged( &statement,(id, timestamp_sec, timestamp_nsec, data),)
                         .await
                         .map_err(|e| { IOError::new(ErrorKind::Other,format!("Error appending to {}: {}", name, e),)})?;
-                    
+
                 }
             }
 /*
