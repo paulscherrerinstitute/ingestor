@@ -13,7 +13,7 @@ use std::thread;
 use std::time::Instant;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::Receiver;
-
+use crate::arguments::{ChannelProcessing, MessageProcessing};
 
 pub enum EngineCommand {
     Start {
@@ -141,7 +141,7 @@ impl Engine {
         //for (context, pool) in self.contexts.iter().zip(self.pools.iter()) {
         for mut pool in self.pools.iter_mut() {
             pool.disconnect();
-            pool.stop_async();
+            pool.interrupt();;
         }
         for mut context in self.contexts.iter_mut() {
         }
@@ -294,21 +294,6 @@ impl Engine {
     }
 
     fn add_pool(&mut self) -> IOResult<()>  {
-        let processor = Arc::clone(&self.processor);
-        let processing_stats = Arc::clone(&self.processing_stats);
-
-        let callback = move |msg: ReceivedMessage| {
-            let processor = Arc::clone(&processor);
-            let processing_stats = Arc::clone(&processing_stats);
-
-            async move {
-                processing_stats.processing.fetch_add(1, Ordering::Relaxed);
-                processor.process(msg.endpoint, msg.message).await;
-                processing_stats.processing.fetch_sub(1, Ordering::Relaxed);
-                processing_stats.processed.fetch_add(1, Ordering::Relaxed);
-            }
-        };
-
         let context =  Bsread::new()?;
         let mut pool = context.pool(vec![], SocketType::PULL, ConnectionMode::Individual, self.receivers() )?;
         pool.set_raw(true);
@@ -346,14 +331,41 @@ impl Engine {
             }
         });
 
-
-        let handle = self.handle.clone();
-        let execution = if self.arguments.concurrent {
-            AsyncExecution::Concurrent
-        } else {
-            AsyncExecution::Ordered { capacity: self.arguments.buffer_size, blocking: false }
+        
+        let execution = match self.arguments.message_processing{
+            MessageProcessing::Direct => {AsyncExecution::Direct}
+            MessageProcessing::Concurrent => {AsyncExecution::Concurrent}
+            MessageProcessing::Ordered => {AsyncExecution::Ordered  { capacity: self.arguments.buffer_size, blocking: false }}
         };
-        pool.start_async(callback, execution, Some(handle),)?;
+
+        if self.arguments.message_processing == MessageProcessing::Direct {
+            let handle = self.handle.clone();
+            let processor = Arc::clone(&self.processor);
+            let processing_stats = Arc::clone(&self.processing_stats);
+            let direct_callback = move |msg: ReceivedMessage| {
+                processing_stats.processing.fetch_add(1, Ordering::Relaxed);
+                processor.process_direct(msg.endpoint, msg.message, &handle);
+                processing_stats.processing.fetch_sub(1, Ordering::Relaxed);
+                processing_stats.processed.fetch_add(1, Ordering::Relaxed);
+            };
+            pool.fork(direct_callback);
+        } else {
+            let handle = self.handle.clone();
+            let processor = Arc::clone(&self.processor);
+            let processing_stats = Arc::clone(&self.processing_stats);
+            let callback = move |msg: ReceivedMessage| {
+                let processor = Arc::clone(&processor);
+                let processing_stats = Arc::clone(&processing_stats);
+
+                async move {
+                    processing_stats.processing.fetch_add(1, Ordering::Relaxed);
+                    processor.process(msg.endpoint, msg.message).await;
+                    processing_stats.processing.fetch_sub(1, Ordering::Relaxed);
+                    processing_stats.processed.fetch_add(1, Ordering::Relaxed);
+                }
+            };
+            pool.start_async(callback, execution, Some(handle),)?;
+        }
 
         self.contexts.push(context);
         self.pools.push(pool);
@@ -408,7 +420,8 @@ impl Engine {
         let sources_stats = self.source_stats();
         let message_stats = self.message_stats();
         let pending = self.processor.pending();
-        let inserted = self.processor.inserted();
+        let treated = self.processor.treated();
+        let channel_dropped = self.processor.dropped();
         let processing = self.processing();
         let processed = self.processed();
         Stats {
@@ -418,7 +431,8 @@ impl Engine {
             processing,
             processed,
             pending,
-            inserted,
+            treated: treated,
+            channel_dropped,
             duplicated_sources: self.processing_stats.duplicated_sources.load(Ordering::Relaxed),
             disabled_sources: self.processing_stats.disabled_sources.load(Ordering::Relaxed),
             connected_sources:sources_stats.connected, connecting_sources:sources_stats.connecting, disconnected_sources:sources_stats.disconnected,
@@ -426,7 +440,8 @@ impl Engine {
             errors_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.errors_rate),
             dropped_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.dropped_rate),
             processed_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.processed_rate),
-            inserted_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.inserted_rate),
+            treated_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.treated_rate),
+            channel_dropped_rate: self.last_stats.as_ref().map_or(0.0, |stats| stats.channel_dropped_rate),
             max_pending: self.last_stats.as_ref().map_or(pending, |stats| max(pending, stats.max_pending)),
             max_processing: self.last_stats.as_ref().map_or(processing, |stats| max(processing, stats.max_processing)),
             cpu, memory, files,
@@ -509,25 +524,27 @@ impl Engine {
         let processing =self.processing();
         let processed = self.processed();
         let pending = self.processor.pending();
-        let inserted = self.processor.inserted();
+        let treated = self.processor.treated();
+        let channel_dropped = self.processor.dropped();
 
-        let (received_rate, errors_rate, dropped_rate, processed_rate, inserted_rate, max_pending, max_processing) = if let Some(last_stats) = self.last_stats.as_ref() {
+        let (received_rate, errors_rate, dropped_rate, processed_rate, treated_rate, channel_dropped_rate, max_pending, max_processing) = if let Some(last_stats) = self.last_stats.as_ref() {
             let new_received = if received < last_stats.received{received} else {received - last_stats.received};
             let new_errors = if errors < last_stats.errors{errors} else {errors - last_stats.errors};
             let new_dropped = if dropped < last_stats.dropped{dropped} else {dropped - last_stats.dropped};
             let new_processed = if processed < last_stats.processed{processed} else {processed - last_stats.processed};
-            let new_inserted = if inserted < last_stats.inserted{inserted} else {inserted - last_stats.inserted};
+            let new_treated = if treated < last_stats.treated {treated} else {treated - last_stats.treated };
+            let new_channel_dropped = if dropped < last_stats.channel_dropped{dropped} else {channel_dropped - last_stats.channel_dropped};
             let new_max_pending = max (pending, last_stats.max_pending);
             let new_max_processing= max (processing, last_stats.max_processing);
-            ((new_received as f32) / 10.0, (new_errors as f32) / 10.0, (new_dropped as f32) / 10.0, (new_processed as f32) / 10.0, (new_inserted as f32) / 10.0,
+            ((new_received as f32) / 10.0, (new_errors as f32) / 10.0, (new_dropped as f32) / 10.0, (new_processed as f32) / 10.0, (new_treated as f32) / 10.0, (new_channel_dropped as f32) / 10.0,
              new_max_pending, new_max_processing)
         } else {
-            (0.0, 0.0, 0.0, 0.0, 0.0, pending, processing)
+            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, pending, processing)
         };
         self.last_stats = Some( Stats{
-            received,errors, dropped, processing, processed,
-            received_rate, errors_rate, dropped_rate, processed_rate, inserted_rate,
-            max_pending, max_processing, pending, inserted,
+            received,errors, dropped, processing, processed,channel_dropped,
+            received_rate, errors_rate, dropped_rate, processed_rate, treated_rate, channel_dropped_rate,
+            max_pending, max_processing, pending, treated,
             duplicated_sources:0, disabled_sources:0,
             connected_sources:0, connecting_sources: 0, disconnected_sources: 0,
             cpu:0.0, memory:0, files:0

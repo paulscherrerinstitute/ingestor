@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -10,6 +10,20 @@ pub const ARGUMENTS_FILE_PATH:&str =  concat!("/etc/", env!("CARGO_PKG_NAME"), "
 
 pub const CONFIG_FILE_PATH: &str = concat!("/var/lib/", env!("CARGO_PKG_NAME"), "/config.json");
 
+#[derive(Debug, Clone, Serialize, Deserialize, ValueEnum, PartialEq)]
+pub enum MessageProcessing {
+    Direct,
+    Concurrent,
+    Ordered
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ValueEnum, PartialEq)]
+pub enum ChannelProcessing {
+    Sync,
+    Async,
+    Joined,
+    Buffered
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -24,11 +38,11 @@ pub struct Arguments {
     pub config_path:PathBuf,
     pub output_path:Option<PathBuf>,
     pub start:bool,
-    pub concurrent:bool,
     pub buffer_size: usize,
     pub receive_hwm: i32,
     pub disable_handshake:bool,
-    pub join_channels:bool,
+    pub message_processing: MessageProcessing,
+    pub channel_processing:ChannelProcessing,
     pub blocking_config:bool,
     pub pause:bool,
 }
@@ -46,11 +60,11 @@ impl Default for Arguments {
             config_path: PathBuf::from(CONFIG_FILE_PATH),
             output_path: None,
             start: false,
-            concurrent: false,
             buffer_size: 100,
             receive_hwm: 1000,
             disable_handshake: false,
-            join_channels: true,
+            message_processing: MessageProcessing::Ordered,
+            channel_processing: ChannelProcessing::Joined,
             blocking_config: true,
             pause: false,
         }
@@ -123,9 +137,6 @@ pub struct Cli {
     #[arg(short = 'a', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Auto-start connections")]
     pub start: Option<bool>,
 
-    #[arg(short = 't', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Does not order sequentially messages from each endpoint")]
-    pub concurrent: Option<bool>,
-
     #[arg(short = 'b', long, help = "Endpoint buffer size, if not concurrent")]
     pub buffer_size: Option<usize>,
 
@@ -135,14 +146,18 @@ pub struct Cli {
     #[arg(short = 'y', long,  action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Disable handshake check")]
     pub disable_handshake: Option<bool>,
 
-    #[arg(short = 'j', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Synchronize ingestion of all channels in a message before processing next")]
-    pub join_channels: Option<bool>,
+    #[arg(short = 'm', long, value_enum)]
+    pub  message_processing: Option<MessageProcessing>,
+
+    #[arg(short = 'x', long, value_enum)]
+    pub channel_processing: Option<ChannelProcessing>,
 
     #[arg(short = 'k', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Configuration commands are blocking")]
     pub blocking_config: Option<bool>,
 
     #[arg(long , action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Start the application in paused state - no database access")]
     pub pause: Option<bool>,
+
 
     // Only en command-line, not present on the file
     #[arg(long, help = "Path to the application arguments TOML file")]
@@ -191,10 +206,6 @@ impl Cli {
             arguments.start = value;
         }
 
-        if let Some(value) = self.concurrent {
-            arguments.concurrent = value;
-        }
-
         if let Some(value) = self.buffer_size {
             arguments.buffer_size = value;
         }
@@ -207,8 +218,12 @@ impl Cli {
             arguments.disable_handshake = value;
         }
 
-        if let Some(value) = self.join_channels {
-            arguments.join_channels = value;
+        if let Some(value) = self.message_processing {
+            arguments.message_processing = value;
+        }
+
+        if let Some(value) = self.channel_processing {
+            arguments.channel_processing = value;
         }
 
         if let Some(value) = self.blocking_config {
