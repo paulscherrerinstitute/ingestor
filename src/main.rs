@@ -8,6 +8,7 @@ mod db;
 mod ingestor;
 mod arguments;
 mod config;
+mod cql;
 
 use crate::arguments::Arguments;
 use crate::db::DB;
