@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use crate::Arguments;
 use crate::DB;
+use crate::cql;
 use std::sync::Arc;
 use bsread::{IOError, IOResult};
 use scylla::statement::prepared::PreparedStatement;
@@ -22,7 +23,7 @@ impl Ingestor {
 
     pub async fn create_table(&self, name:String, kind:String, shape:Option<Vec<u32>>, size:usize) -> IOResult<()>{
         if let Some(session) = self.db.session() {
-            let query = self.db.creation_query(&name);
+            let query = cql::creation_query(&name);
             session.query_unpaged(query, &[]).await.
                 map_err(|e| {IOError::new(ErrorKind::Other,format!("Error creating table {}: {}", &name,  e))})?;
         }
@@ -41,7 +42,7 @@ impl Ingestor {
             match insert_statement{
                 None => {
                     log::warn!("Insert statement with name {} not found", &name);
-                    let query = self.db.insert_query(&name);
+                    let query = cql::insert_query(&name);
                     session.query_unpaged(query, (id, timestamp_sec, timestamp_nsec, data), ).await.
                         map_err(|e| {IOError::new(ErrorKind::Other,format!("Error appending to {}: {}", name, e))})?;
                 }

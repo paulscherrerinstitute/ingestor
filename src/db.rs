@@ -1,4 +1,4 @@
-use crate::{Arguments, app};
+use crate::{Arguments, app, cql};
 use bsread::{IOError, IOResult};
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
@@ -36,19 +36,14 @@ impl DB {
             Ok(session) => {
                 log::info!("Database session created for {}", &arguments.database);
 
-                if let Err(e) = session.query_unpaged("SELECT now() FROM system.local", &[]).await{
+                if let Err(e) = session.query_unpaged(cql::now(), &[]).await{
                     log::error!("Error connecting to database {}: {}", &arguments.database, e);
                     //return Err(IOError::new(ErrorKind::ConnectionRefused, format!("Error connecting to database: {}", e)));
                 } else {
                     log::info!("Connected to database {}", &arguments.database);
                 }
 
-                let query = format!(
-                    "CREATE KEYSPACE IF NOT EXISTS {} \
-                        WITH REPLICATION = {{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}}",
-                    Self::KEYSPACE
-                );
-
+                let query = cql::keyspace_creation();
                 if let Err(e) =  session.query_unpaged(query, &[]).await{
                     log::error!("Error creating keyspace {}: {}", Self::KEYSPACE, e);
                 }
@@ -118,10 +113,7 @@ impl DB {
     }
 
     pub async fn tables(&self) ->  IOResult<Vec<String>> {
-        let query = format!( "SELECT table_name \
-                                     FROM system_schema.tables \
-                                     WHERE keyspace_name = '{}'", DB::KEYSPACE);
-
+        let query = cql::table_names();
         let result = self.query(&query).await?;
 
         let rows_result = result.into_rows_result()
@@ -145,40 +137,12 @@ impl DB {
     pub async fn create_insert_statement(&self, name: &str) -> IOResult<PreparedStatement> {
         let session = self.session()
             .ok_or_else(|| IOError::new(ErrorKind::NotFound, "No session found"))?;
-        let query = self.insert_query(name);
+        let query = cql::insert_query(name);
         let statement = session.prepare(query).await
             .map_err(|e| {IOError::new(ErrorKind::Other,format!("Error preparing insert for {}: {}", name, e))})?;
         Ok(statement)
     }
 
-
-    pub fn creation_query(&self, name: &str) -> String {
-        format!(
-            r#"
-                CREATE TABLE IF NOT EXISTS "{}"."{}" (
-                    id bigint PRIMARY KEY,
-                    timestamp_sec bigint,
-                    timestamp_nsec bigint,
-                    data blob
-                )
-                "#,
-            DB::KEYSPACE,
-            name.replace('"', "\"\"")
-        )
-    }
-
-
-    pub fn insert_query(&self, name: &str) -> String {
-        format!(
-            r#"
-                INSERT INTO "{}"."{}"
-                    (id, timestamp_sec, timestamp_nsec, data)
-                VALUES (?, ?, ?, ?)
-            "#,
-            DB::KEYSPACE,
-            name.replace('"', "\"\"")
-        )
-    }
 
     pub fn metrics(&self) -> Option<ScyllaMetrics>{
         Some(ScyllaMetrics::from_metrics(self.session()?.get_metrics()))
