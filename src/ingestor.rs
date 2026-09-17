@@ -23,7 +23,7 @@ impl Ingestor {
 
     pub async fn create_table(&self, name:String, kind:String, shape:Option<Vec<u32>>, size:usize) -> IOResult<()>{
         if let Some(session) = self.db.session() {
-            let query = cql::creation_query(&name);
+            let query = cql::blob_table_creation(&name);
             session.query_unpaged(query, &[]).await.
                 map_err(|e| {IOError::new(ErrorKind::Other,format!("Error creating table {}: {}", &name,  e))})?;
         }
@@ -53,9 +53,6 @@ impl Ingestor {
 
                 }
             }
-/*
-
-*/
         }
         Ok(())
     }

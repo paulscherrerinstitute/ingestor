@@ -11,7 +11,8 @@ use scylla::errors::MetadataError::Keyspaces;
 use scylla::response::query_result::QueryResult;
 use scylla::statement::prepared::PreparedStatement;
 use tokio::sync::OnceCell;
-
+use crate::arguments::StorageLayout;
+use std::sync::OnceLock;
 
 #[derive(scylla::DeserializeRow)]
 struct TableName {
@@ -24,11 +25,17 @@ pub struct DB {
     enabled: AtomicBool,
 }
 
-impl DB {
-    pub const KEYSPACE: &str = "databuffer";
+static KEYSPACE: OnceLock<String> = OnceLock::new();
 
+impl DB {
     pub fn new(arguments: Arc<Arguments>) -> Self {
+        let keyspace = format! ("db_{:?}", arguments.storage_layout).to_lowercase();
+        KEYSPACE.set(keyspace.to_string()).expect("KEYSPACE has already been initialized");
         Self { arguments, session: OnceCell::new(), enabled: AtomicBool::new(true) }
+    }
+
+    pub fn keyspace() -> &'static String {
+        KEYSPACE.get().expect("KEYSPACE has not been initialized")
     }
 
     async fn create_session(arguments: &Arguments) -> IOResult<Session> {
@@ -45,7 +52,7 @@ impl DB {
 
                 let query = cql::keyspace_creation();
                 if let Err(e) =  session.query_unpaged(query, &[]).await{
-                    log::error!("Error creating keyspace {}: {}", Self::KEYSPACE, e);
+                    log::error!("Error creating keyspace {}: {}", Self::keyspace(), e);
                 }
 
                 Ok(session)

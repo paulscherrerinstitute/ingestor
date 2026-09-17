@@ -25,6 +25,14 @@ pub enum ChannelProcessing {
     Buffered
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ValueEnum, PartialEq)]
+pub enum StorageLayout {
+    Channel,
+    Blob,    
+    Type,
+    Shared
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Arguments {
@@ -41,9 +49,10 @@ pub struct Arguments {
     pub buffer_size: usize,
     pub receive_hwm: i32,
     pub disable_handshake:bool,
+    pub blocking_config:bool,
     pub message_processing: MessageProcessing,
     pub channel_processing:ChannelProcessing,
-    pub blocking_config:bool,
+    pub storage_layout:StorageLayout,
     pub pause:bool,
 }
 
@@ -63,9 +72,10 @@ impl Default for Arguments {
             buffer_size: 100,
             receive_hwm: 1000,
             disable_handshake: false,
+            blocking_config: true,
             message_processing: MessageProcessing::Ordered,
             channel_processing: ChannelProcessing::Joined,
-            blocking_config: true,
+            storage_layout: StorageLayout::Channel,
             pause: false,
         }
     }
@@ -146,15 +156,19 @@ pub struct Cli {
     #[arg(short = 'y', long,  action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Disable handshake check")]
     pub disable_handshake: Option<bool>,
 
+    #[arg(short = 'k', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Configuration commands are blocking")]
+    pub blocking_config: Option<bool>,
+
     #[arg(short = 'm', long, value_enum)]
     pub  message_processing: Option<MessageProcessing>,
 
     #[arg(short = 'x', long, value_enum)]
     pub channel_processing: Option<ChannelProcessing>,
 
-    #[arg(short = 'k', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Configuration commands are blocking")]
-    pub blocking_config: Option<bool>,
+    #[arg(short = 't', long, value_enum)]
+    pub storage_layout: Option<StorageLayout>,
 
+    
     #[arg(long , action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Start the application in paused state - no database access")]
     pub pause: Option<bool>,
 
@@ -218,6 +232,10 @@ impl Cli {
             arguments.disable_handshake = value;
         }
 
+        if let Some(value) = self.blocking_config {
+            arguments.blocking_config = value;
+        }
+
         if let Some(value) = self.message_processing {
             arguments.message_processing = value;
         }
@@ -225,10 +243,11 @@ impl Cli {
         if let Some(value) = self.channel_processing {
             arguments.channel_processing = value;
         }
-
-        if let Some(value) = self.blocking_config {
-            arguments.blocking_config = value;
+        
+        if let Some(value) = self.storage_layout {
+            arguments.storage_layout = value;
         }
+        
         if let Some(value) = self.pause {
             arguments.pause = value;
         }
