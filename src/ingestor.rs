@@ -104,9 +104,13 @@ impl Ingestor {
     pub async fn append_record(&self, name:String,  kind:ScalarType, shape:Option<Vec<u32>>, id: u64, tm: (u64, u64), data:Option<Vec<u8>>) -> IOResult<()> {
         if let Some(session) = self.db.enabled_session() {
             let table_name = self.get_table_name(&name, kind, &shape);
-            let id = i64::try_from(id).map_err(|e| {IOError::new(ErrorKind::Other,format!("Error converting id {}: {}", id, e))})?;
-            let timestamp_sec = i64::try_from(tm.0).map_err(|e| {IOError::new(ErrorKind::Other,format!("Error converting tm {:?}: {}", tm, e))})?;
-            let timestamp_nsec = i64::try_from(tm.1).map_err(|e| {IOError::new(ErrorKind::Other,format!("Error converting tm {:?}: {}", tm, e))})?;
+            let id = id as i64;
+            if id <= 0 {
+                return Err(IOError::new(ErrorKind::Other, format!("Invalid id for {}: {}", name, id)));
+            }
+            
+            let timestamp_sec = tm.0 as i64;
+            let timestamp_nsec = tm.1 as i64;
             let insert_statement = self.insert_statements.read().await.get(&table_name).cloned();
             //Lock released
 
