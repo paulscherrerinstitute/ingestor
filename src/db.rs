@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::{Arguments, app, cql};
 use bsread::{IOError, IOResult};
 use scylla::client::session::Session;
@@ -10,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use scylla::errors::MetadataError::Keyspaces;
 use scylla::response::query_result::QueryResult;
 use scylla::statement::prepared::PreparedStatement;
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, RwLock};
 use crate::arguments::StorageLayout;
 use std::sync::OnceLock;
 
@@ -25,6 +26,8 @@ pub struct DB {
     enabled: AtomicBool,
 }
 
+const SHARED_TABLE_NAME:&str = "data";
+
 static KEYSPACE: OnceLock<String> = OnceLock::new();
 
 impl DB {
@@ -37,6 +40,18 @@ impl DB {
     pub fn keyspace() -> &'static String {
         KEYSPACE.get().expect("KEYSPACE has not been initialized")
     }
+
+    pub fn get_shared_table_name(cql_type: Option<&str>) -> String {
+        match cql_type {
+            None => {SHARED_TABLE_NAME.to_string()}
+            Some(cql_type) => {format!("{SHARED_TABLE_NAME}_{cql_type}")}
+        }
+    }
+
+    pub fn get_individual_table_name(channel_name: &str) -> String {
+        channel_name.to_string()
+    }
+    
     
     async fn create_session(arguments: &Arguments) -> IOResult<Session> {
         match SessionBuilder::new().known_node(&arguments.database).build().await {
@@ -54,7 +69,6 @@ impl DB {
                 if let Err(e) =  session.query_unpaged(query, &[]).await{
                     log::error!("Error creating keyspace {}: {}", Self::keyspace(), e);
                 }
-
                 Ok(session)
             }
             Err(e) => {

@@ -37,6 +37,10 @@ impl StorageLayout {
     pub fn is_blob(&self, ) -> bool {
         matches!( self, StorageLayout::Blob | StorageLayout::Shared)
     }
+    pub fn is_shared(&self, ) -> bool {
+        matches!( self, StorageLayout::Type | StorageLayout::Shared)
+    }
+    
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

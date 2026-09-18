@@ -2,6 +2,8 @@ use bsread::{IOError, IOResult, ErrorKind, ScalarType};
 use tokio::io::SimplexStream;
 use crate::db::DB;
 
+pub const CQL_TYPES: &[&str] = &["text", "boolean", "tinyint", "smallint", "int", "bigint", "float", "double", "blob"];
+
 pub fn now() -> String {
     "SELECT now() FROM system.local".to_string()
 }
@@ -22,7 +24,7 @@ pub fn table_names() -> String {
     )
 }
 
-pub fn blob_table_creation(name: &str) -> String {
+pub fn channel_blob_table_creation(name: &str) -> String {
     format!(
         r#"
         CREATE TABLE IF NOT EXISTS "{}"."{}" (
@@ -37,7 +39,7 @@ pub fn blob_table_creation(name: &str) -> String {
     )
 }
 
-pub fn typed_table_creation(name: &str, kind:ScalarType) -> String {
+pub fn channel_typed_table_creation(name: &str, kind:ScalarType) -> String {
     let cql_type = kind_to_cql_type(kind);
     format!(
         r#"
@@ -53,6 +55,41 @@ pub fn typed_table_creation(name: &str, kind:ScalarType) -> String {
     )
 }
 
+pub fn blob_table_creation(name: &str) -> String {
+    format!(
+        r#"
+        CREATE TABLE IF NOT EXISTS "{}"."{}" (
+            channel text,
+            id bigint,
+            timestamp_sec bigint,
+            timestamp_nsec bigint,
+            data blob,
+            PRIMARY KEY (channel, id)
+        ) WITH CLUSTERING ORDER BY (id ASC);
+        "#,
+        DB::keyspace(),
+        name.replace('"', "\"\""),
+    )
+}
+
+pub fn typed_table_creation(name: &str, cql_type:&str) -> String {
+    format!(
+        r#"
+        CREATE TABLE IF NOT EXISTS "{}"."{}" (
+            channel text,
+            id bigint,
+            timestamp_sec bigint,
+            timestamp_nsec bigint,
+            data {},
+            PRIMARY KEY (channel, id)
+        ) WITH CLUSTERING ORDER BY (id ASC);
+        "#,
+        DB::keyspace(),
+        name.replace('"', "\"\""),
+        cql_type
+    )
+}
+
 
 
 pub fn insert_query(name: &str) -> String {
@@ -61,6 +98,18 @@ pub fn insert_query(name: &str) -> String {
             INSERT INTO "{}"."{}"
                 (id, timestamp_sec, timestamp_nsec, data)
             VALUES (?, ?, ?, ?)
+        "#,
+        DB::keyspace(),
+        name.replace('"', "\"\"")
+    )
+}
+
+pub fn insert_shared_query(name: &str) -> String {
+    format!(
+        r#"
+            INSERT INTO "{}"."{}"
+                (channel, id, timestamp_sec, timestamp_nsec, data)
+            VALUES (?, ?, ?, ?, ?)
         "#,
         DB::keyspace(),
         name.replace('"', "\"\"")

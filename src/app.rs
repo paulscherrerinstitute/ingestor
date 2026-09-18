@@ -184,6 +184,10 @@ impl App {
             })?;
             //let session = self.db.read().await.session();
             //self.ingestor.write().await.set_session(session);
+            self.ingestor.init().await.inspect_err(|e| {
+                log::error!("Error initializing ingestor: {:?}", e);
+                self.set_state(State::Error);
+            })?;
 
             self.engine_client.send_config(self.config.clone()).await.inspect_err(|e| {
                 log::error!("Error sending config in application startup: {:?}", e);
