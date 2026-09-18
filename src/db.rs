@@ -37,7 +37,7 @@ impl DB {
     pub fn keyspace() -> &'static String {
         KEYSPACE.get().expect("KEYSPACE has not been initialized")
     }
-
+    
     async fn create_session(arguments: &Arguments) -> IOResult<Session> {
         match SessionBuilder::new().known_node(&arguments.database).build().await {
             Ok(session) => {
@@ -139,17 +139,6 @@ impl DB {
             })?;
         Ok(rows.into_iter().map(|r| r.table_name).collect())
     }
-
-
-    pub async fn create_insert_statement(&self, name: &str) -> IOResult<PreparedStatement> {
-        let session = self.session()
-            .ok_or_else(|| IOError::new(ErrorKind::NotFound, "No session found"))?;
-        let query = cql::insert_query(name);
-        let statement = session.prepare(query).await
-            .map_err(|e| {IOError::new(ErrorKind::Other,format!("Error preparing insert for {}: {}", name, e))})?;
-        Ok(statement)
-    }
-
 
     pub fn metrics(&self) -> Option<ScyllaMetrics>{
         Some(ScyllaMetrics::from_metrics(self.session()?.get_metrics()))

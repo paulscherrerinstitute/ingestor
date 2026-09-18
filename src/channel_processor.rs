@@ -1,6 +1,6 @@
 use crate::Arguments;
 use crate::ingestor::Ingestor;
-use bsread::ChannelConfig;
+use bsread::{ChannelConfig, ScalarType};
 use chrono::Local;
 use log::LevelFilter;
 use std::fs;
@@ -37,17 +37,17 @@ impl ChannelProcessor {
             }
         }
         let (name, kind, shape) = config.into_parts();
-        if let Err(e) = self.ingestor.append_record(name, id, tm, data).await{
+        if let Err(e) = self.ingestor.append_record(name,kind, shape, id, tm, data).await{
             log::error!("Error appending record for id {}: {}", id, e);
         }
     }
 
  
-    fn print_channel(id: u64, tm: (u64, u64), name:String, data:&Option<Vec<u8>>, kind:String, shape:Option<Vec<u32>>, size:usize) {
+    fn print_channel(id: u64, tm: (u64, u64), name:String, data:&Option<Vec<u8>>, kind:ScalarType, shape:Option<Vec<u32>>, size:usize) {
         println!("Channel {} id:{} data:{:?} type:{} shape:{:?} size:{}", name, id, data, kind, shape, size);
     }
 
-    fn save_channel(path: &PathBuf, id: u64, tm: (u64, u64), name:String, data:&Option<Vec<u8>>, kind:String, shape:Option<Vec<u32>>, size:usize) {
+    fn save_channel(path: &PathBuf, id: u64, tm: (u64, u64), name:String, data:&Option<Vec<u8>>, kind:ScalarType, shape:Option<Vec<u32>>, size:usize) {
         let filename = format!("{}.bin", Local::now().format("%Y%m%d").to_string());
         let path = path.join(&name).join(size.to_string()).join(filename);
         if let Err(err) = Self::append_record(path, id, tm, data, size) {

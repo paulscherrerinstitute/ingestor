@@ -1,3 +1,4 @@
+use bsread::{IOError, IOResult, ErrorKind, ScalarType};
 use tokio::io::SimplexStream;
 use crate::db::DB;
 
@@ -36,6 +37,23 @@ pub fn blob_table_creation(name: &str) -> String {
     )
 }
 
+pub fn typed_table_creation(name: &str, kind:ScalarType) -> String {
+    let cql_type = kind_to_cql_type(kind);
+    format!(
+        r#"
+        CREATE TABLE IF NOT EXISTS "{}"."{}" (
+            id bigint PRIMARY KEY,
+            timestamp_sec bigint,
+            timestamp_nsec bigint,
+            data {})
+        "#,
+        DB::keyspace(),
+        name.replace('"', "\"\""),
+        cql_type
+    )
+}
+
+
 
 pub fn insert_query(name: &str) -> String {
     format!(
@@ -48,3 +66,22 @@ pub fn insert_query(name: &str) -> String {
         name.replace('"', "\"\"")
     )
 }
+
+
+pub fn kind_to_cql_type(kind:ScalarType) -> &'static str {
+    match kind {
+        ScalarType::string  => "text",
+        ScalarType::bool    => "boolean",
+        ScalarType::int8    => "tinyint",
+        ScalarType::uint8   => "smallint",
+        ScalarType::int16   => "smallint",
+        ScalarType::uint16  => "int",
+        ScalarType::int32   => "int",
+        ScalarType::uint32  => "bigint",
+        ScalarType::int64   => "bigint",
+        ScalarType::uint64  => "blob",
+        ScalarType::float32 => "float",
+        ScalarType::float64 => "double"
+    }
+}
+

@@ -1,6 +1,6 @@
 use crate::Arguments;
 use crate::channel_processor::ChannelProcessor;
-use bsread::{Bsread, ChannelConfig, ChannelData, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Message, Pool, Receiver, SocketType};
+use bsread::{Bsread, ChannelConfig, ChannelData, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Message, Pool, Receiver, ScalarType, SocketType};
 use futures::future::join_all;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ use crate::arguments::ChannelProcessing;
 #[derive(Debug, Clone, Serialize)]
 pub struct ChannelInfo{
     name: String,
-    kind: String,
+    kind: ScalarType,
     shape: Vec<u32>
 }
 
@@ -230,7 +230,7 @@ impl Processor {
             Some(data) => match data.into_value().into_bytes() {
                 Some(arr) => {
                     if arr.len() != config.size() {
-                        if config.kind() != "string" { //What to do for variable-lenght strings?
+                        if config.kind() != ScalarType::string { //What to do for variable-lenght strings?
                             return Err(IOError::new(ErrorKind::Other, format!("Channel {} data lenght {} is different from configuration size {}", config.name(), arr.len(), config.size())));
                         }
                     }

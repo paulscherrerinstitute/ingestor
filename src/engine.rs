@@ -13,7 +13,7 @@ use std::thread;
 use std::time::Instant;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::Receiver;
-use crate::arguments::{ChannelProcessing, MessageProcessing};
+use crate::arguments::{ChannelProcessing, MessageProcessing, StorageLayout};
 
 pub enum EngineCommand {
     Start {

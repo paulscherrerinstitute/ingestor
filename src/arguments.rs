@@ -28,9 +28,15 @@ pub enum ChannelProcessing {
 #[derive(Debug, Clone, Serialize, Deserialize, ValueEnum, PartialEq)]
 pub enum StorageLayout {
     Channel,
-    Blob,    
+    Blob,
     Type,
     Shared
+}
+
+impl StorageLayout {
+    pub fn is_blob(&self, ) -> bool {
+        matches!( self, StorageLayout::Blob | StorageLayout::Shared)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,7 +174,7 @@ pub struct Cli {
     #[arg(short = 't', long, value_enum)]
     pub storage_layout: Option<StorageLayout>,
 
-    
+
     #[arg(long , action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Start the application in paused state - no database access")]
     pub pause: Option<bool>,
 
@@ -243,11 +249,11 @@ impl Cli {
         if let Some(value) = self.channel_processing {
             arguments.channel_processing = value;
         }
-        
+
         if let Some(value) = self.storage_layout {
             arguments.storage_layout = value;
         }
-        
+
         if let Some(value) = self.pause {
             arguments.pause = value;
         }
