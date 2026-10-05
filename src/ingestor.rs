@@ -4,7 +4,7 @@ use crate::Arguments;
 use crate::DB;
 use crate::cql;
 use std::sync::Arc;
-use bsread::{IOError, IOResult, ScalarType};
+use bsread::{channel, IOError, IOResult, ScalarType};
 use scylla::_macro_internal::SerializeRow;
 use scylla::client::session::Session;
 use scylla::statement::prepared::PreparedStatement;
@@ -46,7 +46,7 @@ impl Ingestor {
     }
 
     fn is_blob_table(&self, kind:ScalarType, shape:&Option<Vec<u32>>) -> bool {
-        is_array(shape) || self.arguments.storage_layout.is_blob()
+        channel::is_array(shape) || self.arguments.storage_layout.is_blob()
     }
 
 
@@ -81,12 +81,12 @@ impl Ingestor {
             if let Some(session) = self.db.session() {
                 let table_name = self.get_table_name(&name, kind, &shape);
                 if self.is_blob_table(kind, &shape) {
-                    self.create_blob_table(session, &name).await?;
+                    self.create_blob_table(session, &table_name).await?;
                 } else {
-                    self.create_typed_table(session, &name, kind).await?;
+                    self.create_typed_table(session, &table_name, kind).await?;
                 }
                 let prepared_statement = self.create_insert_statement(session, &table_name).await?;
-                self.insert_statements.write().await.insert(name, prepared_statement);
+                self.insert_statements.write().await.insert(table_name, prepared_statement);
             }
         }
         Ok(())
@@ -96,7 +96,7 @@ impl Ingestor {
         match self.arguments.storage_layout {
             StorageLayout::Channel => {DB::get_individual_table_name(channel_name)}
             StorageLayout::Blob => {DB::get_individual_table_name(channel_name)}
-            StorageLayout::Type => {DB::get_shared_table_name(Some(if is_array(shape){"blob"} else {cql::kind_to_cql_type(kind)}))}
+            StorageLayout::Type => {DB::get_shared_table_name(Some(if channel::is_array(shape){"blob"} else {cql::kind_to_cql_type(kind)}))}
             StorageLayout::Shared => {DB::get_shared_table_name(None)}
         }
     }
@@ -164,13 +164,13 @@ impl Ingestor {
     async fn insert(&self, session:&Session, table_name: &str, name: &str, values: impl SerializeRow,) -> IOResult<()> {
         let query = cql::insert_query(&table_name);
         session.query_unpaged(query, values, ).await.
-            map_err(|e| { IOError::new(ErrorKind::Other, format!("Error appending to {}: {}", name, e)) })?;
+            map_err(|e| { IOError::new(ErrorKind::Other, format!("Error appending {}: {}", name, e)) })?;
         Ok(())
     }
     async fn execute_statement(&self, session:&Session, statement: &PreparedStatement, name: &str, values: impl SerializeRow,) -> IOResult<()> {
         session.execute_unpaged( &statement,values,)
             .await
-            .map_err(|e| { IOError::new(ErrorKind::Other,format!("Error appending to {}: {}", name, e),)})?;
+            .map_err(|e| { IOError::new(ErrorKind::Other,format!("Error appending {}: {}", name, e),)})?;
         Ok(())
     }
 
@@ -386,11 +386,3 @@ fn decode<T, const N: usize>(data: Vec<u8>,f: impl FnOnce([u8; N]) -> T,) -> IOR
     Ok(f(bytes))
 }
 
-fn is_array(shape:&Option<Vec<u32>>) -> bool {
-    match shape{
-        None => {false}
-        Some(shape) => {
-            !shape.is_empty() && (shape[0] > 0)
-        }
-    }
-}

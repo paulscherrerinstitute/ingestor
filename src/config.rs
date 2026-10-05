@@ -42,11 +42,13 @@ impl Config {
     pub fn load(path: &PathBuf) -> IOResult<Self> {
         let json =std::fs::read_to_string(path)?;
         let config: Config = serde_json::from_str(&json)?;
+        log::info!("Loaded config from: {:?}", path);
         Ok(config)
     }
     pub fn save(&self, path: &PathBuf) -> IOResult<()> {
         let json = serde_json::to_string_pretty(&self)?;
         std::fs::write(path, json)?;
+        log::info!("Saved config to: {:?}", path);
         Ok(())
     }
 }

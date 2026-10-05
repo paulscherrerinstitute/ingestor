@@ -85,7 +85,7 @@ impl Default for Arguments {
             blocking_config: true,
             message_processing: MessageProcessing::Ordered,
             channel_processing: ChannelProcessing::Joined,
-            storage_layout: StorageLayout::Channel,
+            storage_layout: StorageLayout::Type,
             pause: false,
         }
     }
@@ -110,7 +110,7 @@ impl Arguments {
 
         let mut arguments = match Arguments::read(args_file) {
             Ok(arguments) => {
-                log::info!("Loaded arguments from {}", ARGUMENTS_FILE_PATH);
+                log::info!("Loaded arguments from: {}", ARGUMENTS_FILE_PATH);
                 arguments
             }
             Err(e) => {

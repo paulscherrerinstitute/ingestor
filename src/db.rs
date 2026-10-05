@@ -49,7 +49,10 @@ impl DB {
     }
 
     pub fn get_individual_table_name(channel_name: &str) -> String {
-        channel_name.to_string()
+        channel_name
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect()
     }
     
     
