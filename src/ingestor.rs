@@ -58,7 +58,7 @@ impl Ingestor {
                     let table_name = DB::get_shared_table_name(Some(cql_type));
                     let query = cql::typed_table_creation(&table_name, cql_type);
                     session.query_unpaged(query, &[]).await.
-                        map_err(|e| { IOError::new(ErrorKind::Other, format!("Error creating table {}: {}", &table_name, e))})?;
+                        map_err(|e| { IOError::other( format!("Error creating table {}: {}", &table_name, e))})?;
 
                     let prepared_statement = self.create_insert_statement(session, &table_name).await?;
                     self.insert_statements.write().await.insert(table_name, prepared_statement);
@@ -67,7 +67,7 @@ impl Ingestor {
                 let table_name = DB::get_shared_table_name(None);
                 let query = cql::blob_table_creation(&table_name);
                 session.query_unpaged(query, &[]).await.
-                    map_err(|e| { IOError::new(ErrorKind::Other, format!("Error creating table {}: {}", &table_name, e))})?;
+                    map_err(|e| { IOError::other( format!("Error creating table {}: {}", &table_name, e))})?;
 
                 let prepared_statement = self.create_insert_statement(session, &table_name).await?;
                 self.insert_statements.write().await.insert(table_name, prepared_statement);
@@ -81,9 +81,9 @@ impl Ingestor {
             if let Some(session) = self.db.session() {
                 let table_name = self.get_table_name(&name, kind, &shape);
                 if self.is_blob_table(kind, &shape) {
-                    self.create_blob_table(session, &table_name).await?;
+                    self.db.create_table(&table_name, None).await?;
                 } else {
-                    self.create_typed_table(session, &table_name, kind).await?;
+                    self.db.create_table(&table_name, Some(kind)).await?;
                 }
                 let prepared_statement = self.create_insert_statement(session, &table_name).await?;
                 self.insert_statements.write().await.insert(table_name, prepared_statement);
@@ -106,7 +106,7 @@ impl Ingestor {
             let table_name = self.get_table_name(&name, kind, &shape);
             let id = id as i64;
             if id <= 0 {
-                return Err(IOError::new(ErrorKind::Other, format!("Invalid id for {}: {}", name, id)));
+                return Err(IOError::other( format!("Invalid id for {}: {}", name, id)));
             }
             
             let timestamp_sec = tm.0 as i64;
@@ -143,34 +143,20 @@ impl Ingestor {
             cql::insert_query(table_name)
         };
         let statement = session.prepare(query).await
-            .map_err(|e| {IOError::new(ErrorKind::Other,format!("Error preparing insert for table {}: {}", table_name, e))})?;
+            .map_err(|e| {IOError::other(format!("Error preparing insert for table {}: {}", table_name, e))})?;
         Ok(statement)
-    }
-
-    async fn create_blob_table(&self, session:&Session, table_name: &str) -> IOResult<()> {
-        let query = cql::channel_blob_table_creation(&table_name);
-        session.query_unpaged(query, &[]).await.
-            map_err(|e| { IOError::new(ErrorKind::Other, format!("Error creating table {}: {}", &table_name, e))})?;
-        Ok(())
-    }
-
-    async fn create_typed_table(&self, session:&Session, table_name: &str, kind: ScalarType) -> IOResult<()> {
-        let query = cql::channel_typed_table_creation(&table_name, kind);
-        session.query_unpaged(query, &[]).await.
-            map_err(|e| { IOError::new(ErrorKind::Other, format!("Error creating table {}: {}", &table_name, e))})?;
-        Ok(())
     }
 
     async fn insert(&self, session:&Session, table_name: &str, name: &str, values: impl SerializeRow,) -> IOResult<()> {
         let query = cql::insert_query(&table_name);
         session.query_unpaged(query, values, ).await.
-            map_err(|e| { IOError::new(ErrorKind::Other, format!("Error appending {}: {}", name, e)) })?;
+            map_err(|e| { IOError::other( format!("Error appending {}: {}", name, e)) })?;
         Ok(())
     }
     async fn execute_statement(&self, session:&Session, statement: &PreparedStatement, name: &str, values: impl SerializeRow,) -> IOResult<()> {
         session.execute_unpaged( &statement,values,)
             .await
-            .map_err(|e| { IOError::new(ErrorKind::Other,format!("Error appending {}: {}", name, e),)})?;
+            .map_err(|e| { IOError::other(format!("Error appending {}: {}", name, e),)})?;
         Ok(())
     }
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::{Arguments, app, cql};
-use bsread::{IOError, IOResult};
+use bsread::{IOError, IOResult, ScalarType};
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::observability::metrics::Metrics;
@@ -11,13 +11,28 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use scylla::errors::MetadataError::Keyspaces;
 use scylla::response::query_result::QueryResult;
 use scylla::statement::prepared::PreparedStatement;
+use scylla::deserialize::row::DeserializeRow;
 use tokio::sync::{OnceCell, RwLock};
-use crate::arguments::StorageLayout;
 use std::sync::OnceLock;
 
 #[derive(scylla::DeserializeRow)]
 struct TableName {
     table_name: String,
+}
+
+#[derive(scylla::DeserializeRow)]
+struct KeyspaceName {
+    keyspace_name: String,
+}
+
+#[derive(scylla::DeserializeRow)]
+struct Column {
+    column_name: String
+}
+
+#[derive(scylla::DeserializeRow)]
+struct ColumnType {
+    cql_type: String,
 }
 
 pub struct DB {
@@ -68,9 +83,16 @@ impl DB {
                     log::info!("Connected to database {}", &arguments.database);
                 }
 
-                let query = cql::keyspace_creation();
-                if let Err(e) =  session.query_unpaged(query, &[]).await{
-                    log::error!("Error creating keyspace {}: {}", Self::keyspace(), e);
+                if arguments.create {
+                    let query = cql::keyspace_creation();
+                    if let Err(e) = session.query_unpaged(query, &[]).await {
+                        log::error!("Error creating keyspace {}: {}", Self::keyspace(), e);
+                    }
+                } else {
+                    if !Self::keyspace_exists(&session).await?{
+                        log::error!("Keyspace does not exist: {}", Self::keyspace());
+                        return Err(IOError::new(ErrorKind::NotFound, format!("Keyspace does not exist: {}", Self::keyspace())));
+                    }
                 }
                 Ok(session)
             }
@@ -89,7 +111,35 @@ impl DB {
         } else {
             Err(IOError::new(ErrorKind::NotFound, "No session found"))
         }
+    }
 
+    pub async fn create_table(&self, table_name: &str, kind: Option<ScalarType>) -> IOResult<()> {
+        if self.arguments.create {
+            let query = match kind{
+                None => {
+                    cql::channel_blob_table_creation(&table_name)
+                }
+                Some(kind) => {
+                    cql::channel_typed_table_creation(&table_name, kind)
+                }
+            };
+            self.query(&query).await?;
+        } else {
+            if !self.table_exists(table_name).await?{
+                log::error!("Table does not exist: {}", table_name);
+                return Err(IOError::new(ErrorKind::NotFound, format!("Table does not exist: {}", table_name)));
+            }
+
+            let cql_type = match kind {
+                None => {"blob"}
+                Some(kind) => {cql::kind_to_cql_type(kind)}
+            };
+            let table_type = self.column_type(table_name, cql::COLUMN_DATA).await?;
+            if  table_type != cql_type{
+                return Err(IOError::new(ErrorKind::NotFound, format!("Invalid table data type: {} ({})", table_name, cql_type )));
+            }
+        }
+        Ok(())
     }
 
 
@@ -136,29 +186,72 @@ impl DB {
         }
     }
 
-    pub async fn tables(&self) ->  IOResult<Vec<String>> {
-        let query = cql::table_names();
-        let result = self.query(&query).await?;
+    async fn keyspace_exists(session: &Session) -> IOResult<bool> {
+        Ok(Self::keyspaces(session).await.unwrap_or_default().contains(Self::keyspace()))
+    }
 
-        let rows_result = result.into_rows_result()
-            .map_err(|e| {
-                IOError::new(ErrorKind::Other, format!("Error decoding result: {}", e))
-            })?;
+    pub async fn keyspaces(session: &Session) ->  IOResult<Vec<String>> {
+        let query = cql::keyspace_names();
+        let result = session.query_unpaged(query.as_str(), &[]).await.
+            map_err(|e| {IOError::new(ErrorKind::Other,format!("Error performing query {}: {}", &query,  e))})?;
+        let rows = Self::get_rows(result)?;
+        Ok(rows.into_iter().map(|r:KeyspaceName| r.keyspace_name).collect())
+    }
 
-        let rows = rows_result
-            .rows::<TableName>()
-            .map_err(|e| {
-                IOError::new(ErrorKind::Other, format!("Error decoding rows: {}", e))
-            })?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| {
-                IOError::new(ErrorKind::Other, format!("Error decoding row: {}", e))
-            })?;
+    pub async fn table_exists(&self, name:&str) -> IOResult<bool> {
+        Ok(self.tables().await.unwrap_or_default().contains(&name.to_string()))
+    }
+
+    pub async fn tables(&self) -> IOResult<Vec<String>> {
+        let rows = self.query_rows::<TableName>(&cql::table_names()).await?;
         Ok(rows.into_iter().map(|r| r.table_name).collect())
+    }
+
+    pub async fn columns(&self,table: &str,) -> IOResult<Vec<String>> {
+        let rows = self.query_rows::<Column>(&cql::columns(table),).await?;
+        Ok(rows.into_iter().map(|r| r.column_name).collect())
+    }
+    pub async fn column_type(&self, table: &str,column: &str,) -> IOResult<String> {
+        let rows = self.query_rows::<ColumnType>(&cql::column_type(table, column),).await?;
+        if rows.is_empty() {
+            Err(IOError::other(format!("Column not found: {}-{}", table, column)))
+        } else {
+            Ok(rows[0].cql_type.clone())
+        }
     }
 
     pub fn metrics(&self) -> Option<ScyllaMetrics>{
         Some(ScyllaMetrics::from_metrics(self.session()?.get_metrics()))
+    }
+
+
+    async fn query_rows<T>(&self, query: &str) -> IOResult<Vec<T>>
+    where
+        T: for<'a> DeserializeRow<'a, 'a>,
+    {
+        let result = self.query(query).await?;
+        Self::get_rows(result)
+    }
+
+    fn get_rows<T>(result:QueryResult) -> IOResult<Vec<T>>
+    where
+        T: for<'a> DeserializeRow<'a, 'a>,
+    {
+        let rows_result = result
+            .into_rows_result()
+            .map_err(|e| {
+                IOError::other(format!("Error decoding result: {}", e),)
+            })?;
+
+        rows_result
+            .rows::<T>()
+            .map_err(|e| {
+                IOError::other(format!("Error decoding rows: {}", e),)
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| {
+                IOError::other(format!("Error decoding row: {}", e),)
+            })
     }
 }
 

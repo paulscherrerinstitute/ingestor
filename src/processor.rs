@@ -198,7 +198,7 @@ impl Processor {
 
         if source_info.last_id > 0 {
             if source_info.last_id >= id {
-                return Err(IOError::new(ErrorKind::Other, format!("Received unordered message for {:?} last: {:?}, id: {}", endpoint, source_info.last_id, id)));
+                return Err(IOError::other( format!("Received unordered message for {:?} last: {:?}, id: {}", endpoint, source_info.last_id, id)));
             } else if id != source_info.last_id + 1 {
                 //TODO: Remove
                 log::warn!("Missed ID from  {:?} last: {:?}, id: {}", endpoint, source_info.last_id, id);
@@ -231,13 +231,13 @@ impl Processor {
                 Some(arr) => {
                     if arr.len() != config.size() {
                         if config.kind() != ScalarType::string { //What to do for variable-lenght strings?
-                            return Err(IOError::new(ErrorKind::Other, format!("Channel {} data lenght {} is different from configuration size {}", config.name(), arr.len(), config.size())));
+                            return Err(IOError::other( format!("Channel {} data lenght {} is different from configuration size {}", config.name(), arr.len(), config.size())));
                         }
                     }
                     Ok(Some(arr))
                 },
                 None => {
-                    Err(IOError::new(ErrorKind::Other, format!("Channel {} data is not u8 array: {} raw={}", config.name(), config.kind(), config.is_raw())))
+                    Err(IOError::other( format!("Channel {} data is not u8 array: {} raw={}", config.name(), config.kind(), config.is_raw())))
                 }
             },
             None => Ok(None)

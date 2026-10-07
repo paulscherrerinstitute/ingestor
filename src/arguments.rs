@@ -64,6 +64,7 @@ pub struct Arguments {
     pub channel_processing:ChannelProcessing,
     pub storage_layout:StorageLayout,
     pub pause:bool,
+    pub create:bool,
 }
 
 impl Default for Arguments {
@@ -87,6 +88,7 @@ impl Default for Arguments {
             channel_processing: ChannelProcessing::Joined,
             storage_layout: StorageLayout::Type,
             pause: false,
+            create: false,
         }
     }
 
@@ -182,6 +184,8 @@ pub struct Cli {
     #[arg(long , action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Start the application in paused state - no database access")]
     pub pause: Option<bool>,
 
+    #[arg(long , action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Create databases if absent")]
+    pub create: Option<bool>,
 
     // Only en command-line, not present on the file
     #[arg(long, help = "Path to the application arguments TOML file")]
@@ -260,6 +264,10 @@ impl Cli {
 
         if let Some(value) = self.pause {
             arguments.pause = value;
+        }
+
+        if let Some(value) = self.create {
+            arguments.create = value;
         }
     }
 }
