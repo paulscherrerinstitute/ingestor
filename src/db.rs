@@ -14,6 +14,7 @@ use scylla::statement::prepared::PreparedStatement;
 use scylla::deserialize::row::DeserializeRow;
 use tokio::sync::{OnceCell, RwLock};
 use std::sync::OnceLock;
+use scylla::_macro_internal::SerializeRow;
 
 #[derive(scylla::DeserializeRow)]
 struct TableName {
@@ -103,14 +104,18 @@ impl DB {
         }
     }
 
-    pub async fn query(&self, query:&str) -> IOResult<QueryResult>{
+    fn get_session(&self) -> IOResult<&Session> {
         if let Some(session) = self.session() {
-            let ret = session.query_unpaged(query, &[]).await.
-                map_err(|e| {IOError::new(ErrorKind::Other,format!("Error performing query {}: {}", query,  e))})?;
-            Ok(ret)
+            Ok(session)
         } else {
-            Err(IOError::new(ErrorKind::NotFound, "No session found"))
+            Err(IOError::new(ErrorKind::NotFound, "Session not initialized"))
         }
+    }
+
+    pub async fn query(&self, query:&str) -> IOResult<QueryResult>{
+        let ret = self.get_session()?.query_unpaged(query, &[]).await.
+            map_err(|e| {IOError::new(ErrorKind::Other,format!("Error performing query {}: {}", query,  e))})?;
+        Ok(ret)
     }
 
     pub async fn create_table(&self, table_name: &str, kind: Option<ScalarType>) -> IOResult<()> {
@@ -219,6 +224,31 @@ impl DB {
             Ok(rows[0].cql_type.clone())
         }
     }
+
+    pub async fn create_insert_statement(&self, table_name: &str) -> IOResult<PreparedStatement> {
+        let query = if self.arguments.storage_layout.is_shared(){
+            cql::insert_shared_query(table_name)
+        } else {
+            cql::insert_query(table_name)
+        };
+        let statement = self.get_session()?.prepare(query).await
+            .map_err(|e| {IOError::other(format!("Error preparing insert for table {}: {}", table_name, e))})?;
+        Ok(statement)
+    }
+
+    pub async fn insert(&self, table_name: &str, name: &str, values: impl SerializeRow,) -> IOResult<()> {
+        let query = cql::insert_query(&table_name);
+        self.get_session()?.query_unpaged(query, values, ).await.
+            map_err(|e| { IOError::other( format!("Error appending {}: {}", name, e)) })?;
+        Ok(())
+    }
+    pub async fn execute_statement(&self, statement: &PreparedStatement, name: &str, values: impl SerializeRow,) -> IOResult<()> {
+        self.get_session()?.execute_unpaged( &statement,values,)
+            .await
+            .map_err(|e| { IOError::other(format!("Error appending {}: {}", name, e),)})?;
+        Ok(())
+    }
+
 
     pub fn metrics(&self) -> Option<ScyllaMetrics>{
         Some(ScyllaMetrics::from_metrics(self.session()?.get_metrics()))

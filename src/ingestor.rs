@@ -19,21 +19,21 @@ pub struct Ingestor {
 }
 
 macro_rules! insert_record {
-    ($self:expr, $session:expr, $table_name:expr, $name:expr, $id:expr, $timestamp_sec:expr, $timestamp_nsec:expr, $value:expr) => {
+    ($self:expr, $table_name:expr, $name:expr, $id:expr, $timestamp_sec:expr, $timestamp_nsec:expr, $value:expr) => {
         if $self.arguments.storage_layout.is_shared() {
-            $self.insert($session,$table_name,$name, ($name, $id, $timestamp_sec, $timestamp_nsec, $value),).await
+            $self.db.insert($table_name,$name, ($name, $id, $timestamp_sec, $timestamp_nsec, $value),).await
         } else {
-            $self.insert($session,$table_name,$name, ($id, $timestamp_sec, $timestamp_nsec, $value),).await
+            $self.db.insert($table_name,$name, ($id, $timestamp_sec, $timestamp_nsec, $value),).await
         }
     };
 }
 
 macro_rules! exec_statement {
-    ($self:expr, $session:expr, $statement:expr, $name:expr, $id:expr, $timestamp_sec:expr, $timestamp_nsec:expr, $value:expr) => {
+    ($self:expr,$statement:expr, $name:expr, $id:expr, $timestamp_sec:expr, $timestamp_nsec:expr, $value:expr) => {
         if $self.arguments.storage_layout.is_shared() {
-            $self.execute_statement($session,$statement, $name,($name, $id, $timestamp_sec, $timestamp_nsec, $value),).await
+            $self.db.execute_statement($statement, $name,($name, $id, $timestamp_sec, $timestamp_nsec, $value),).await
         } else {
-            $self.execute_statement($session,$statement, $name,($id, $timestamp_sec, $timestamp_nsec, $value),).await
+            $self.db.execute_statement($statement, $name,($id, $timestamp_sec, $timestamp_nsec, $value),).await
         }
     };
 }
@@ -60,7 +60,7 @@ impl Ingestor {
                     session.query_unpaged(query, &[]).await.
                         map_err(|e| { IOError::other( format!("Error creating table {}: {}", &table_name, e))})?;
 
-                    let prepared_statement = self.create_insert_statement(session, &table_name).await?;
+                    let prepared_statement = self.db.create_insert_statement(&table_name).await?;
                     self.insert_statements.write().await.insert(table_name, prepared_statement);
                 }
             }  else if self.arguments.storage_layout == StorageLayout::Shared {
@@ -69,7 +69,7 @@ impl Ingestor {
                 session.query_unpaged(query, &[]).await.
                     map_err(|e| { IOError::other( format!("Error creating table {}: {}", &table_name, e))})?;
 
-                let prepared_statement = self.create_insert_statement(session, &table_name).await?;
+                let prepared_statement = self.db.create_insert_statement(&table_name).await?;
                 self.insert_statements.write().await.insert(table_name, prepared_statement);
             }
         }
@@ -78,16 +78,14 @@ impl Ingestor {
 
     pub async fn create_table(&self, name:String, kind:ScalarType, shape:Option<Vec<u32>>, size:usize) -> IOResult<()>{
         if !self.arguments.storage_layout.is_shared() {
-            if let Some(session) = self.db.session() {
-                let table_name = self.get_table_name(&name, kind, &shape);
-                if self.is_blob_table(kind, &shape) {
-                    self.db.create_table(&table_name, None).await?;
-                } else {
-                    self.db.create_table(&table_name, Some(kind)).await?;
-                }
-                let prepared_statement = self.create_insert_statement(session, &table_name).await?;
-                self.insert_statements.write().await.insert(table_name, prepared_statement);
+            let table_name = self.get_table_name(&name, kind, &shape);
+            if self.is_blob_table(kind, &shape) {
+                self.db.create_table(&table_name, None).await?;
+            } else {
+                self.db.create_table(&table_name, Some(kind)).await?;
             }
+            let prepared_statement = self.db.create_insert_statement(&table_name).await?;
+            self.insert_statements.write().await.insert(table_name, prepared_statement);
         }
         Ok(())
     }
@@ -102,7 +100,7 @@ impl Ingestor {
     }
 
     pub async fn append_record(&self, name:String,  kind:ScalarType, shape:Option<Vec<u32>>, id: u64, tm: (u64, u64), data:Option<Vec<u8>>) -> IOResult<()> {
-        if let Some(session) = self.db.enabled_session() {
+        if self.db.enabled_session().is_some() {
             let table_name = self.get_table_name(&name, kind, &shape);
             let id = id as i64;
             if id <= 0 {
@@ -118,16 +116,16 @@ impl Ingestor {
                 None => {
                     log::warn!("Insert statement with name {} not found", &name);
                     if self.is_blob_table(kind, &shape) {
-                        self.insert_blob(session, &table_name, &name, id, timestamp_sec, timestamp_nsec, data).await?;
+                        self.insert_blob(&table_name, &name, id, timestamp_sec, timestamp_nsec, data).await?;
                     } else {
-                        self.insert_typed(session, &table_name, &name, kind, id, timestamp_sec, timestamp_nsec, data).await?;
+                        self.insert_typed(&table_name, &name, kind, id, timestamp_sec, timestamp_nsec, data).await?;
                     }
                 }
                 Some(statement) => {
                     if self.is_blob_table(kind, &shape) {
-                        self.execute_statement_blob(session, &statement, &name, id, timestamp_sec, timestamp_nsec, data).await?;
+                        self.execute_statement_blob(&statement, &name, id, timestamp_sec, timestamp_nsec, data).await?;
                     } else {
-                        self.execute_statement_typed(session, &statement, &name, kind, id, timestamp_sec, timestamp_nsec, data).await?;
+                        self.execute_statement_typed(&statement, &name, kind, id, timestamp_sec, timestamp_nsec, data).await?;
                     }
                 }
             }
@@ -136,47 +134,23 @@ impl Ingestor {
     }
 
 
-    async fn create_insert_statement(&self, session:&Session, table_name: &str) -> IOResult<PreparedStatement> {
-        let query = if self.arguments.storage_layout.is_shared(){
-            cql::insert_shared_query(table_name)
-        } else {
-            cql::insert_query(table_name)
-        };
-        let statement = session.prepare(query).await
-            .map_err(|e| {IOError::other(format!("Error preparing insert for table {}: {}", table_name, e))})?;
-        Ok(statement)
-    }
 
-    async fn insert(&self, session:&Session, table_name: &str, name: &str, values: impl SerializeRow,) -> IOResult<()> {
-        let query = cql::insert_query(&table_name);
-        session.query_unpaged(query, values, ).await.
-            map_err(|e| { IOError::other( format!("Error appending {}: {}", name, e)) })?;
-        Ok(())
-    }
-    async fn execute_statement(&self, session:&Session, statement: &PreparedStatement, name: &str, values: impl SerializeRow,) -> IOResult<()> {
-        session.execute_unpaged( &statement,values,)
-            .await
-            .map_err(|e| { IOError::other(format!("Error appending {}: {}", name, e),)})?;
-        Ok(())
-    }
-
-
-    async fn insert_blob(&self, session:&Session, table_name: &str, name: &str, id: i64,timestamp_sec: i64, timestamp_nsec:i64, data:Option<Vec<u8>>) -> IOResult<()> {
+    async fn insert_blob(&self, table_name: &str, name: &str, id: i64,timestamp_sec: i64, timestamp_nsec:i64, data:Option<Vec<u8>>) -> IOResult<()> {
         if self.arguments.storage_layout.is_shared() {
-            self.insert(session, table_name, name,(name, id, timestamp_sec, timestamp_nsec, data), ).await
+            self.db.insert(table_name, name,(name, id, timestamp_sec, timestamp_nsec, data), ).await
         } else {
-            self.insert(session, table_name, name,(id, timestamp_sec, timestamp_nsec, data), ).await
+            self.db.insert(table_name, name,(id, timestamp_sec, timestamp_nsec, data), ).await
         }
     }
 
-    async fn insert_typed(&self, session: &Session, table_name: &str, name: &str, kind: ScalarType, id: i64,  timestamp_sec: i64, timestamp_nsec: i64,data: Option<Vec<u8>>,) -> IOResult<()> {
+    async fn insert_typed(&self, table_name: &str, name: &str, kind: ScalarType, id: i64,  timestamp_sec: i64, timestamp_nsec: i64,data: Option<Vec<u8>>,) -> IOResult<()> {
         match kind {
             ScalarType::string => {
                 let value = data
                     .map(String::from_utf8)
                     .transpose()
                     .map_err(|e| IOError::new(ErrorKind::InvalidData, e))?;
-                insert_record!(self, session, table_name, name, id, timestamp_sec, timestamp_nsec, value)
+                insert_record!(self, table_name, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::bool => {
@@ -191,14 +165,14 @@ impl Ingestor {
                         Ok::<bool, IOError>(bytes[0] != 0)
                     })
                     .transpose()?;
-                insert_record!(self, session, table_name, name, id, timestamp_sec, timestamp_nsec, value)
+                insert_record!(self, table_name, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::int8 => {
                 let value = data
                     .map(|v| decode(v, i8::from_le_bytes))
                     .transpose()?;
-                insert_record!(self, session, table_name, name, id, timestamp_sec, timestamp_nsec, value)
+                insert_record!(self, table_name, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::uint8 => {
@@ -206,14 +180,14 @@ impl Ingestor {
                     .map(|v| decode(v, u8::from_le_bytes))
                     .transpose()?
                     .map(i16::from);
-                insert_record!(self, session,table_name, name, id, timestamp_sec, timestamp_nsec, value)
+                insert_record!(self, table_name, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::int16 => {
                 let value = data
                     .map(|v| decode(v, i16::from_le_bytes))
                     .transpose()?;
-                insert_record!(self, session,table_name,  name, id, timestamp_sec, timestamp_nsec, value)
+                insert_record!(self,table_name,  name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::uint16 => {
@@ -221,14 +195,14 @@ impl Ingestor {
                     .map(|v| decode(v, u16::from_le_bytes))
                     .transpose()?
                     .map(i32::from);
-                insert_record!(self, session, table_name, name, id, timestamp_sec, timestamp_nsec, value)
+                insert_record!(self, table_name, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::int32 => {
                 let value = data
                     .map(|v| decode(v, i32::from_le_bytes))
                     .transpose()?;
-                insert_record!(self, session, table_name, name, id, timestamp_sec, timestamp_nsec, value)
+                insert_record!(self, table_name, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::uint32 => {
@@ -236,67 +210,67 @@ impl Ingestor {
                     .map(|v| decode(v, u32::from_le_bytes))
                     .transpose()?
                     .map(i64::from);
-                insert_record!(self, session, table_name, name, id, timestamp_sec, timestamp_nsec, value)
+                insert_record!(self, table_name, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::int64 => {
                 let value = data
                     .map(|v| decode(v, i64::from_le_bytes))
                     .transpose()?;
-                insert_record!(self, session, table_name, name, id, timestamp_sec, timestamp_nsec, value)
+                insert_record!(self, table_name, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::uint64 => {
                 // CQL has no uint64, so preserve the original bytes as a blob.
-                insert_record!(self, session, table_name, name, id, timestamp_sec, timestamp_nsec, data)
+                insert_record!(self, table_name, name, id, timestamp_sec, timestamp_nsec, data)
             }
 
             ScalarType::float32 => {
                 let value = data
                     .map(|v| decode(v, f32::from_le_bytes))
                     .transpose()?;
-                insert_record!(self, session, table_name, name, id, timestamp_sec, timestamp_nsec, value)
+                insert_record!(self, table_name, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::float64 => {
                 let value = data
                     .map(|v| decode(v, f64::from_le_bytes))
                     .transpose()?;
-                insert_record!(self, session, table_name, name, id, timestamp_sec, timestamp_nsec, value)
+                insert_record!(self, table_name, name, id, timestamp_sec, timestamp_nsec, value)
             }
         }
     }
 
-    async fn execute_statement_blob(&self, session:&Session, statement: &PreparedStatement, name: &str, id: i64,timestamp_sec: i64,timestamp_nsec: i64,data: Option<Vec<u8>>) -> IOResult<()> {
+    async fn execute_statement_blob(&self, statement: &PreparedStatement, name: &str, id: i64,timestamp_sec: i64,timestamp_nsec: i64,data: Option<Vec<u8>>) -> IOResult<()> {
         if self.arguments.storage_layout.is_shared() {
-            self.execute_statement(session, statement, name, (name, id, timestamp_sec, timestamp_nsec, data)).await
+            self.db.execute_statement(statement, name, (name, id, timestamp_sec, timestamp_nsec, data)).await
         } else {
-            self.execute_statement(session, statement, name, (id, timestamp_sec, timestamp_nsec, data)).await
+            self.db.execute_statement(statement, name, (id, timestamp_sec, timestamp_nsec, data)).await
         }
     }
 
-    async fn execute_statement_typed(&self,session: &Session,statement: &PreparedStatement,name: &str,kind: ScalarType,id: i64,timestamp_sec: i64,timestamp_nsec: i64,data: Option<Vec<u8>>,) -> IOResult<()> {
+    async fn execute_statement_typed(&self,statement: &PreparedStatement,name: &str,kind: ScalarType,id: i64,timestamp_sec: i64,timestamp_nsec: i64,data: Option<Vec<u8>>,) -> IOResult<()> {
         match kind {
             ScalarType::string => {
                 let value = data
                     .map(String::from_utf8)
                     .transpose()
                     .map_err(|e| IOError::new(ErrorKind::InvalidData, e))?;
-                exec_statement!(self, session, statement, name, id, timestamp_sec, timestamp_nsec, value)
+                exec_statement!(self, statement, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::bool => {
                 let value = data
                     .map(|v| decode(v, |b: [u8; 1]| b[0] != 0))
                     .transpose()?;
-                exec_statement!(self, session, statement, name, id, timestamp_sec, timestamp_nsec, value)
+                exec_statement!(self, statement, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::int8 => {
                 let value = data
                     .map(|v| decode(v, i8::from_le_bytes))
                     .transpose()?;
-                exec_statement!(self, session, statement, name, id, timestamp_sec, timestamp_nsec, value)
+                exec_statement!(self, statement, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::uint8 => {
@@ -304,14 +278,14 @@ impl Ingestor {
                     .map(|v| decode(v, u8::from_le_bytes))
                     .transpose()?
                     .map(i16::from);
-                exec_statement!(self, session, statement, name, id, timestamp_sec, timestamp_nsec, value)
+                exec_statement!(self, statement, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::int16 => {
                 let value = data
                     .map(|v| decode(v, i16::from_le_bytes))
                     .transpose()?;
-                exec_statement!(self, session, statement, name, id, timestamp_sec, timestamp_nsec, value)
+                exec_statement!(self, statement, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::uint16 => {
@@ -319,14 +293,14 @@ impl Ingestor {
                     .map(|v| decode(v, u16::from_le_bytes))
                     .transpose()?
                     .map(i32::from);
-                exec_statement!(self, session, statement, name, id, timestamp_sec, timestamp_nsec, value)
+                exec_statement!(self, statement, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::int32 => {
                 let value = data
                     .map(|v| decode(v, i32::from_le_bytes))
                     .transpose()?;
-                exec_statement!(self, session, statement, name, id, timestamp_sec, timestamp_nsec, value)
+                exec_statement!(self, statement, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::uint32 => {
@@ -334,33 +308,33 @@ impl Ingestor {
                     .map(|v| decode(v, u32::from_le_bytes))
                     .transpose()?
                     .map(i64::from);
-                exec_statement!(self, session, statement, name, id, timestamp_sec, timestamp_nsec, value)
+                exec_statement!(self, statement, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::int64 => {
                 let value = data
                     .map(|v| decode(v, i64::from_le_bytes))
                     .transpose()?;
-                exec_statement!(self, session, statement, name, id, timestamp_sec, timestamp_nsec, value)
+                exec_statement!(self, statement, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::uint64 => {
                 // uint64 is represented as CQL blob.
-                exec_statement!(self, session, statement, name, id, timestamp_sec, timestamp_nsec, data)
+                exec_statement!(self, statement, name, id, timestamp_sec, timestamp_nsec, data)
             }
 
             ScalarType::float32 => {
                 let value = data
                     .map(|v| decode(v, f32::from_le_bytes))
                     .transpose()?;
-                exec_statement!(self, session, statement, name, id, timestamp_sec, timestamp_nsec, value)
+                exec_statement!(self, statement, name, id, timestamp_sec, timestamp_nsec, value)
             }
 
             ScalarType::float64 => {
                 let value = data
                     .map(|v| decode(v, f64::from_le_bytes))
                     .transpose()?;
-                exec_statement!(self, session, statement, name, id, timestamp_sec, timestamp_nsec, value)
+                exec_statement!(self, statement, name, id, timestamp_sec, timestamp_nsec, value)
             }
         }
     }

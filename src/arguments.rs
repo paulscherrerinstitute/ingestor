@@ -157,7 +157,7 @@ pub struct Cli {
     #[arg(short = 'c', long , help = "Channel-list configuration/persistence file name")]
     pub config_path: Option<PathBuf>,
 
-    #[arg(short = 's', long, value_enum , num_args = 0..=1, default_missing_value = "started", help = "Startup state - defaults to Stopped")]
+    #[arg(short = 's', long, value_enum , num_args = 0..=1, default_missing_value = "started", help = "Startup state - defaults to stopped")]
     pub start: Option<StartupState>,
 
 
