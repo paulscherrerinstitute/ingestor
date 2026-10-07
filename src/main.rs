@@ -10,7 +10,7 @@ mod arguments;
 mod config;
 mod cql;
 
-use crate::arguments::Arguments;
+use crate::arguments::{Arguments, StartupState};
 use crate::db::DB;
 use app::App;
 use log;
@@ -45,9 +45,9 @@ async fn main() {
     if arguments.pause{
         app.write().await.set_db_enabled(false);
     }
-    if arguments.start {
+    if arguments.start.is_started() {
         app.write().await.start().await.unwrap();
-        if arguments.pause{
+        if arguments.start == StartupState::Paused {
             app.write().await.pause().await.unwrap();
         }
     }

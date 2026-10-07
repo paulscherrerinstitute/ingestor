@@ -104,7 +104,7 @@ impl App {
         let channel_processor = Arc::new(ChannelProcessor::new(arguments.clone(), ingestor.clone()));
         let processor = Arc::new(Processor::new(arguments.clone(), channel_processor.clone()));
         Engine::launch(arguments.clone(), engine_rx, handle.clone(), processor.clone());
-        App {arguments, config, engine_client, processor, channel_processor, db, ingestor, state:State::Starting, timer_handle: None}
+        App {arguments, config, engine_client, processor, channel_processor, db, ingestor, state:State::Stopped, timer_handle: None}
     }
 
     fn assertState(&self, state:State) -> IOResult<()> {

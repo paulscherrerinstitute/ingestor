@@ -11,6 +11,19 @@ pub const ARGUMENTS_FILE_PATH:&str =  concat!("/etc/", env!("CARGO_PKG_NAME"), "
 pub const CONFIG_FILE_PATH: &str = concat!("/var/lib/", env!("CARGO_PKG_NAME"), "/config.json");
 
 #[derive(Debug, Clone, Serialize, Deserialize, ValueEnum, PartialEq)]
+pub enum StartupState {
+    Stopped,
+    Started,
+    Paused
+}
+
+impl StartupState {
+    pub fn is_started(&self) -> bool {
+        *self != Self::Stopped
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ValueEnum, PartialEq)]
 pub enum MessageProcessing {
     Direct,
     Concurrent,
@@ -55,7 +68,7 @@ pub struct Arguments {
     pub debug:bool,
     pub config_path:PathBuf,
     pub output_path:Option<PathBuf>,
-    pub start:bool,
+    pub start:StartupState,
     pub buffer_size: usize,
     pub receive_hwm: i32,
     pub disable_handshake:bool,
@@ -79,7 +92,7 @@ impl Default for Arguments {
             debug: false,
             config_path: PathBuf::from(CONFIG_FILE_PATH),
             output_path: None,
-            start: false,
+            start: StartupState::Stopped,
             buffer_size: 100,
             receive_hwm: 1000,
             disable_handshake: false,
@@ -135,54 +148,51 @@ pub struct Cli {
     #[arg(short = 'i', long, help = "Application instance ID")]
     pub instance_id: Option<String>,
 
-    #[arg(short = 'e', long, help = "Scylla database URL")]
+    #[arg(short = 'u', long, help = "Scylla database URL")]
     pub database: Option<String>,
 
     #[arg(short = 'p', long,  help = "Port of the API")]
     pub port: Option<u32>,
 
-    #[arg(short = 'd', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Debug flag")]
-    pub debug: Option<bool>,
-
-    #[arg(short = 's', long,  help = "Maximum endpoints per context")]
-    pub pool_size: Option<usize>,
-
-    #[arg(short = 'r', long,  help = "Number of receivers per context")]
-    pub receivers: Option<usize>,
-
     #[arg(short = 'c', long , help = "Channel-list configuration/persistence file name")]
     pub config_path: Option<PathBuf>,
 
-    #[arg(short = 'o', long, help = "Data output path")]
-    pub output_path: Option<PathBuf>,
+    #[arg(short = 's', long, value_enum , num_args = 0..=1, default_missing_value = "started", help = "Startup state - defaults to Stopped")]
+    pub start: Option<StartupState>,
 
-    #[arg(short = 'a', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Auto-start connections")]
-    pub start: Option<bool>,
 
-    #[arg(short = 'b', long, help = "Endpoint buffer size, if not concurrent")]
+    #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Debug flag")]
+    pub debug: Option<bool>,
+
+    #[arg(long,  help = "Maximum endpoints per context")]
+    pub pool_size: Option<usize>,
+
+    #[arg(long,  help = "Number of receivers per context")]
+    pub receivers: Option<usize>,
+
+    #[arg(long, help = "Endpoint buffer size, if not concurrent")]
     pub buffer_size: Option<usize>,
 
-    #[arg(short = 'w', long, help = "Receive High Water Mark")]
+    #[arg(long, help = "Receive High Water Mark")]
     pub receive_hwm: Option<i32>,
 
-    #[arg(short = 'y', long,  action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Disable handshake check")]
+    #[arg(long,  action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Disable handshake check")]
     pub disable_handshake: Option<bool>,
 
-    #[arg(short = 'k', long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Configuration commands are blocking")]
+    #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Configuration commands are blocking")]
     pub blocking_config: Option<bool>,
 
-    #[arg(short = 'm', long, value_enum)]
+    #[arg(long, value_enum)]
     pub  message_processing: Option<MessageProcessing>,
 
-    #[arg(short = 'x', long, value_enum)]
+    #[arg(long, value_enum)]
     pub channel_processing: Option<ChannelProcessing>,
 
-    #[arg(short = 't', long, value_enum)]
+    #[arg(long, value_enum)]
     pub storage_layout: Option<StorageLayout>,
 
-
-    #[arg(long , action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Start the application in paused state - no database access")]
-    pub pause: Option<bool>,
+    #[arg(long, help = "Data output path")]
+    pub output_path: Option<PathBuf>,
 
     #[arg(long , action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Create databases if absent")]
     pub create: Option<bool>,
@@ -260,10 +270,6 @@ impl Cli {
 
         if let Some(value) = self.storage_layout {
             arguments.storage_layout = value;
-        }
-
-        if let Some(value) = self.pause {
-            arguments.pause = value;
         }
 
         if let Some(value) = self.create {
