@@ -40,18 +40,16 @@ pub enum ChannelProcessing {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ValueEnum, PartialEq)]
 pub enum StorageLayout {
-    Channel,
-    Blob,
-    Type,
-    Shared
+    Default,
+    Typed,
 }
 
 impl StorageLayout {
-    pub fn is_blob(&self, ) -> bool {
-        matches!( self, StorageLayout::Blob | StorageLayout::Shared)
+    pub fn is_typed(&self, ) -> bool {
+        matches!( self, StorageLayout::Typed)
     }
-    pub fn is_shared(&self, ) -> bool {
-        matches!( self, StorageLayout::Type | StorageLayout::Shared)
+    pub fn is_i64_encoded(&self, ) -> bool {
+        matches!( self, StorageLayout::Default)
     }
     
 }
@@ -99,7 +97,7 @@ impl Default for Arguments {
             blocking_config: true,
             message_processing: MessageProcessing::Ordered,
             channel_processing: ChannelProcessing::Joined,
-            storage_layout: StorageLayout::Type,
+            storage_layout: StorageLayout::Default,
             pause: false,
             create: false,
         }

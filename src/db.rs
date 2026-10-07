@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::{Arguments, app, cql};
-use bsread::{IOError, IOResult, ScalarType};
+use bsread::{channel, IOError, IOResult, ScalarType};
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::observability::metrics::Metrics;
@@ -15,6 +15,7 @@ use scylla::deserialize::row::DeserializeRow;
 use tokio::sync::{OnceCell, RwLock};
 use std::sync::OnceLock;
 use scylla::_macro_internal::SerializeRow;
+use crate::arguments::StorageLayout;
 
 #[derive(scylla::DeserializeRow)]
 struct TableName {
@@ -57,21 +58,7 @@ impl DB {
         KEYSPACE.get().expect("KEYSPACE has not been initialized")
     }
 
-    pub fn get_shared_table_name(cql_type: Option<&str>) -> String {
-        match cql_type {
-            None => {SHARED_TABLE_NAME.to_string()}
-            Some(cql_type) => {format!("{SHARED_TABLE_NAME}_{cql_type}")}
-        }
-    }
 
-    pub fn get_individual_table_name(channel_name: &str) -> String {
-        channel_name
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect()
-    }
-    
-    
     async fn create_session(arguments: &Arguments) -> IOResult<Session> {
         match SessionBuilder::new().known_node(&arguments.database).build().await {
             Ok(session) => {
@@ -118,27 +105,18 @@ impl DB {
         Ok(ret)
     }
 
-    pub async fn create_table(&self, table_name: &str, kind: Option<ScalarType>) -> IOResult<()> {
+    pub async fn create_table(&self, table_name: &str, cql_type:&str, with_type_col: bool) -> IOResult<()> {
         if self.arguments.create {
-            let query = match kind{
-                None => {
-                    cql::channel_blob_table_creation(&table_name)
-                }
-                Some(kind) => {
-                    cql::channel_typed_table_creation(&table_name, kind)
-                }
-            };
-            self.query(&query).await?;
+            let query = cql::create_data_table(&table_name, cql_type, with_type_col);
+            if let Err(e) = self.query(&query).await {
+                log::error!("Error creating table: {}", table_name);
+                return Err(e);
+            }
         } else {
             if !self.table_exists(table_name).await?{
                 log::error!("Table does not exist: {}", table_name);
                 return Err(IOError::new(ErrorKind::NotFound, format!("Table does not exist: {}", table_name)));
             }
-
-            let cql_type = match kind {
-                None => {"blob"}
-                Some(kind) => {cql::kind_to_cql_type(kind)}
-            };
             let table_type = self.column_type(table_name, cql::COLUMN_DATA).await?;
             if  table_type != cql_type{
                 return Err(IOError::new(ErrorKind::NotFound, format!("Invalid table data type: {} ({})", table_name, cql_type )));
@@ -225,19 +203,22 @@ impl DB {
         }
     }
 
-    pub async fn create_insert_statement(&self, table_name: &str) -> IOResult<PreparedStatement> {
-        let query = if self.arguments.storage_layout.is_shared(){
-            cql::insert_shared_query(table_name)
-        } else {
-            cql::insert_query(table_name)
-        };
+    pub async fn create_insert_statement(&self, table_name: &str, with_type_col: bool) -> IOResult<PreparedStatement> {
+        let query =  cql::insert_data_query(table_name,with_type_col);
         let statement = self.get_session()?.prepare(query).await
             .map_err(|e| {IOError::other(format!("Error preparing insert for table {}: {}", table_name, e))})?;
         Ok(statement)
     }
 
-    pub async fn insert(&self, table_name: &str, name: &str, values: impl SerializeRow,) -> IOResult<()> {
-        let query = cql::insert_query(&table_name);
+    pub async fn insert_with_type(&self, table_name: &str, name: &str, values: impl SerializeRow,) -> IOResult<()> { ;
+        let query = cql::insert_data_query(&table_name, true);
+        self.get_session()?.query_unpaged(query, values, ).await.
+            map_err(|e| { IOError::other( format!("Error appending {}: {}", name, e)) })?;
+        Ok(())
+    }
+
+    pub async fn insert(&self, table_name: &str, name: &str, values: impl SerializeRow,) -> IOResult<()> { ;
+        let query = cql::insert_data_query(&table_name, false);
         self.get_session()?.query_unpaged(query, values, ).await.
             map_err(|e| { IOError::other( format!("Error appending {}: {}", name, e)) })?;
         Ok(())

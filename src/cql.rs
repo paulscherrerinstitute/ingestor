@@ -5,11 +5,15 @@ use crate::db::DB;
 
 
 pub const COLUMN_CHANNEL:&str = "channel";
+pub const COLUMN_BUCKET:&str = "bucket";
 pub const COLUMN_ID:&str = "id";
-pub const COLUMN_SECS:&str = "timestamp_sec";
-pub const COLUMN_NANOS:&str = "timestamp_nsec";
+//pub const COLUMN_SECS:&str = "timestamp_sec";
+//pub const COLUMN_NANOS:&str = "timestamp_nsec";
+
+pub const COLUMN_TYPE:&str = "dtype";
 pub const COLUMN_DATA:&str = "data";
 pub const CQL_TYPES: &[&str] = &["text", "boolean", "tinyint", "smallint", "int", "bigint", "float", "double", "blob"];
+
 
 pub fn now() -> String {
     "SELECT now() FROM system.local".to_string()
@@ -22,6 +26,10 @@ pub fn keyspace_creation() -> String {
         DB::keyspace()
     )
 }
+
+
+//WITH replication = {'class': 'NetworkTopologyStrategy', '<datacenter_name>': 3}
+//AND durable_writes = true;
 
 pub fn table_names() -> String {
     format!("SELECT table_name \
@@ -58,109 +66,43 @@ pub fn keyspace_names() -> String {
     "SELECT keyspace_name FROM system_schema.keyspaces".to_string()
 }
 
-pub fn channel_blob_table_creation(name: &str) -> String {
+pub fn create_data_table(name: &str, cql_type: &str, with_type_col: bool) -> String {
+    let type_col = if with_type_col {format!("\n                {} tinyint,", COLUMN_TYPE)} else {String::new()};
     format!(
         r#"
-        CREATE TABLE IF NOT EXISTS "{}"."{}" (
-            {} bigint PRIMARY KEY,
-            {} bigint,
-            {} bigint,
-            {} blob
-        )
-        "#,
-        DB::keyspace(), name.replace('"', "\"\""),
-        COLUMN_ID,
-        COLUMN_SECS,
-        COLUMN_NANOS,
-        COLUMN_DATA
-    )
-}
-
-pub fn channel_typed_table_creation(name: &str, kind:ScalarType) -> String {
-    let cql_type = kind_to_cql_type(kind);
-    format!(
-        r#"
-        CREATE TABLE IF NOT EXISTS "{}"."{}" (
-            {} bigint PRIMARY KEY,
-            {} bigint,
-            {} bigint,
-            {} {})
-        "#,
-        DB::keyspace(), name.replace('"', "\"\""),
-        COLUMN_ID,
-        COLUMN_SECS,
-        COLUMN_NANOS,
-        COLUMN_DATA, cql_type
-    )
-}
-
-pub fn blob_table_creation(name: &str) -> String {
-    format!(
-        r#"
-        CREATE TABLE IF NOT EXISTS "{}"."{}" (
-            {} text,
-            {} bigint,
-            {} bigint,
-            {} bigint,
-            {} blob,
-            PRIMARY KEY ({}, {})
-        ) WITH CLUSTERING ORDER BY (id ASC);
-        "#,
+            CREATE TABLE IF NOT EXISTS "{}"."{}" (
+                {} text,
+                {} bigint,
+                {} bigint,
+                {} {},{}
+                PRIMARY KEY (({}, {}), {})
+            ) WITH CLUSTERING ORDER BY ({} ASC)
+              AND default_time_to_live = 259200
+              AND gc_grace_seconds = 0
+              AND compaction = {{'class': 'TimeWindowCompactionStrategy', 'compaction_window_size': 8, 'compaction_window_unit': 'HOURS'}};
+         "#,
         DB::keyspace(), name.replace('"', "\"\""),
         COLUMN_CHANNEL,
+        COLUMN_BUCKET,
         COLUMN_ID,
-        COLUMN_SECS,
-        COLUMN_NANOS,
-        COLUMN_DATA,
-        COLUMN_CHANNEL, COLUMN_ID
-    )
-}
-
-pub fn typed_table_creation(name: &str, cql_type:&str) -> String {
-    format!(
-        r#"
-        CREATE TABLE IF NOT EXISTS "{}"."{}" (
-            {} text,
-            {} bigint,
-            {} bigint,
-            {} bigint,
-            {} {},
-            PRIMARY KEY ({}, {})
-        ) WITH CLUSTERING ORDER BY (id ASC);
-        "#,
-        DB::keyspace(), name.replace('"', "\"\""),
-        COLUMN_CHANNEL,
+        COLUMN_DATA, cql_type, type_col,
+        COLUMN_CHANNEL,COLUMN_BUCKET, COLUMN_ID,
         COLUMN_ID,
-        COLUMN_SECS,
-        COLUMN_NANOS,
-        COLUMN_DATA, cql_type,
-        COLUMN_CHANNEL, COLUMN_ID
     )
 }
 
 
-
-pub fn insert_query(name: &str) -> String {
+pub fn insert_data_query(name: &str, with_type_col: bool) -> String {
+    let type_col = if with_type_col { format!(", {}", COLUMN_TYPE) } else {String::new()};
+    let type_val = if with_type_col { ", ?".to_string() } else {String::new()};
     format!(
         r#"
             INSERT INTO "{}"."{}"
-                ({}, {}, {}, {})
-            VALUES (?, ?, ?, ?)
-        "#,
-        DB::keyspace(),name.replace('"', "\"\""),
-        COLUMN_ID, COLUMN_SECS, COLUMN_NANOS, COLUMN_DATA,
-    )
-}
-
-pub fn insert_shared_query(name: &str) -> String {
-    format!(
-        r#"
-            INSERT INTO "{}"."{}"
-                 ({}, {}, {}, {}, {})
-            VALUES (?, ?, ?, ?, ?)
+                 ({}, {}, {}, {}{})
+            VALUES (?, ?, ?, ?{})
         "#,
         DB::keyspace(), name.replace('"', "\"\""),
-        COLUMN_CHANNEL, COLUMN_ID, COLUMN_SECS, COLUMN_NANOS, COLUMN_DATA,
+        COLUMN_CHANNEL, COLUMN_BUCKET, COLUMN_ID, COLUMN_DATA, type_col, type_val
     )
 }
 

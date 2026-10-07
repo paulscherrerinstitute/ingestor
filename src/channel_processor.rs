@@ -32,7 +32,7 @@ impl ChannelProcessor {
         }
 
         if header_changed {
-            if let Err(e) = self.ingestor.create_table(config.name(), config.kind(), config.shape(), config.size()).await{
+            if let Err(e) = self.ingestor.on_header_change(config.name(), config.kind(), config.shape(), config.size()).await{
                 log::error!("Error creating table {} {} {:?} {}: {}", config.name(), config.kind(), config.shape(), config.size(), e);
             }
         }
