@@ -3,12 +3,10 @@ use std::io::ErrorKind;
 use crate::Arguments;
 use crate::DB;
 use crate::cql;
+use crate::codec::*;
 use std::sync::Arc;
 use bsread::{channel, IOError, IOResult, ScalarType};
-use scylla::_macro_internal::SerializeRow;
-use scylla::client::session::Session;
 use scylla::statement::prepared::PreparedStatement;
-use scylla::errors::ExecutionError;
 use tokio::sync::RwLock;
 use crate::arguments::StorageLayout;
 
@@ -22,7 +20,7 @@ pub fn get_table_name(layout:&StorageLayout, channel_name:&str, kind:ScalarType,
             if channel::is_array(shape) {
                 "blob"
             }  else {
-                cql::kind_to_cql_type(kind)
+                kind_to_cql_type(kind)
             }
         }
         StorageLayout::Default => {
@@ -42,7 +40,6 @@ pub struct Ingestor {
     db: Arc<DB>,
     insert_statements: RwLock<HashMap<String, PreparedStatement>>,
 }
-
 
 
 impl Ingestor {
@@ -132,13 +129,13 @@ impl Ingestor {
 
 
     async fn insert_blob(&self, table_name: &str, name: &str, kind: ScalarType, bucket: i64, id: i64, data:Option<Vec<u8>>) -> IOResult<()> {
-        let dtype = dtype(kind);
+        let dtype = kind_to_dtype(kind);
         self.db.insert_with_type(table_name, name,(name, bucket, id, data, dtype), ).await
     }
 
     async fn insert_asi64(&self, table_name: &str, name: &str, kind: ScalarType, bucket: i64, id: i64, data:Option<Vec<u8>>) -> IOResult<()> {
         let data = encode_to_i64(kind, data)?;
-        let dtype = dtype(kind);
+        let dtype = kind_to_dtype(kind);
         self.db.insert_with_type(table_name, name,(name, bucket, id, data, dtype), ).await
     }
 
@@ -151,103 +148,61 @@ impl Ingestor {
                     .map_err(|e| IOError::new(ErrorKind::InvalidData, e))?;
                 self.db.insert(table_name, name,(name, bucket, id, value)).await
             }
-
             ScalarType::bool => {
-                let value = data
-                    .map(|v| {
-                        let bytes: [u8; 1] = v.try_into()
-                            .map_err(|_| IOError::new(
-                                ErrorKind::InvalidData,
-                                "Invalid bool data",
-                            ))?;
-
-                        Ok::<bool, IOError>(bytes[0] != 0)
-                    })
-                    .transpose()?;
-                self.db.insert(table_name, name,(name, bucket, id, value)).await
+                let value = decode_optional(data,|b: [u8; 1]| b[0] != 0,)?;
+                self.db.insert(table_name, name, (name, bucket, id, value)).await
             }
-
             ScalarType::int8 => {
-                let value = data
-                    .map(|v| decode(v, i8::from_le_bytes))
-                    .transpose()?;
-                self.db.insert(table_name, name,(name, bucket, id, value)).await
+                let value = decode_optional(data, i8::from_le_bytes)?;
+                self.db.insert(table_name, name, (name, bucket, id, value)).await
             }
-
             ScalarType::uint8 => {
-                let value = data
-                    .map(|v| decode(v, u8::from_le_bytes))
-                    .transpose()?
-                    .map(i16::from);
-                self.db.insert(table_name, name,(name, bucket, id, value)).await
+                let value = decode_optional(data, u8::from_le_bytes)?.map(i16::from);
+                self.db.insert(table_name, name, (name, bucket, id, value)).await
             }
-
             ScalarType::int16 => {
-                let value = data
-                    .map(|v| decode(v, i16::from_le_bytes))
-                    .transpose()?;
-                self.db.insert(table_name, name,(name, bucket, id, value)).await
+                let value = decode_optional(data, i16::from_le_bytes)?;
+                self.db.insert(table_name, name, (name, bucket, id, value)).await
             }
-
             ScalarType::uint16 => {
-                let value = data
-                    .map(|v| decode(v, u16::from_le_bytes))
-                    .transpose()?
-                    .map(i32::from);
-                self.db.insert(table_name, name,(name, bucket, id, value)).await
+                let value = decode_optional(data, u16::from_le_bytes)?.map(i32::from);
+                self.db.insert(table_name, name, (name, bucket, id, value)).await
             }
-
             ScalarType::int32 => {
-                let value = data
-                    .map(|v| decode(v, i32::from_le_bytes))
-                    .transpose()?;
-                self.db.insert(table_name, name,(name, bucket, id, value)).await
+                let value = decode_optional(data, i32::from_le_bytes)?;
+                self.db.insert(table_name, name, (name, bucket, id, value)).await
             }
-
             ScalarType::uint32 => {
-                let value = data
-                    .map(|v| decode(v, u32::from_le_bytes))
-                    .transpose()?
-                    .map(i64::from);
-                self.db.insert(table_name, name,(name, bucket, id, value)).await
+                let value = decode_optional(data, u32::from_le_bytes)?.map(i64::from);
+                self.db.insert(table_name, name, (name, bucket, id, value)).await
             }
-
             ScalarType::int64 => {
-                let value = data
-                    .map(|v| decode(v, i64::from_le_bytes))
-                    .transpose()?;
-                self.db.insert(table_name, name,(name, bucket, id, value)).await
+                let value = decode_optional(data, i64::from_le_bytes)?;
+                self.db.insert(table_name, name, (name, bucket, id, value)).await
             }
-
             ScalarType::uint64 => {
                 // CQL has no uint64, so preserve the original bytes as a blob.
-                self.db.insert(table_name, name,(name, bucket, id, data)).await
+                self.db.insert(table_name, name, (name, bucket, id, data)).await
             }
-
             ScalarType::float32 => {
-                let value = data
-                    .map(|v| decode(v, f32::from_le_bytes))
-                    .transpose()?;
-                self.db.insert(table_name, name,(name, bucket, id, value)).await
+                let value = decode_optional(data, f32::from_le_bytes)?;
+                self.db.insert(table_name, name, (name, bucket, id, value)).await
             }
-
             ScalarType::float64 => {
-                let value = data
-                    .map(|v| decode(v, f64::from_le_bytes))
-                    .transpose()?;
-                self.db.insert(table_name, name,(name, id, value)).await
+                let value = decode_optional(data, f64::from_le_bytes)?;
+                self.db.insert(table_name, name, (name, bucket, id, value)).await
             }
         }
     }
 
     async fn execute_statement_blob(&self, statement: &PreparedStatement, name: &str, kind: ScalarType, bucket: i64, id: i64, data: Option<Vec<u8>>) -> IOResult<()> {
-        let dtype = dtype(kind);
+        let dtype = kind_to_dtype(kind);
         self.db.execute_statement(statement, name, (name, bucket, id, data, dtype)).await
     }
 
     async fn execute_statement_i64(&self, statement: &PreparedStatement, name: &str, kind: ScalarType,bucket: i64,  id: i64, data: Option<Vec<u8>>) -> IOResult<()> {
         let data = encode_to_i64(kind, data)?;
-        let dtype = dtype(kind);
+        let dtype = kind_to_dtype(kind);
         self.db.execute_statement(statement, name, (name, bucket, id, data, dtype)).await
     }
 
@@ -260,169 +215,50 @@ impl Ingestor {
                     .map_err(|e| IOError::new(ErrorKind::InvalidData, e))?;
                 self.db.execute_statement(statement, name, (name, bucket, id, value)).await
             }
-
             ScalarType::bool => {
-                let value = data
-                    .map(|v| decode(v, |b: [u8; 1]| b[0] != 0))
-                    .transpose()?;
+                let value = decode_optional(data, |b: [u8; 1]| b[0] != 0)?;
                 self.db.execute_statement(statement, name, (name, bucket, id, value)).await
             }
-
             ScalarType::int8 => {
-                let value = data
-                    .map(|v| decode(v, i8::from_le_bytes))
-                    .transpose()?;
+                let value = decode_optional(data, i8::from_le_bytes)?;
                 self.db.execute_statement(statement, name, (name, bucket, id, value)).await
             }
-
             ScalarType::uint8 => {
-                let value = data
-                    .map(|v| decode(v, u8::from_le_bytes))
-                    .transpose()?
-                    .map(i16::from);
+                let value = decode_optional(data, u8::from_le_bytes)?.map(i16::from);
                 self.db.execute_statement(statement, name, (name, bucket, id, value)).await
             }
-
             ScalarType::int16 => {
-                let value = data
-                    .map(|v| decode(v, i16::from_le_bytes))
-                    .transpose()?;
+                let value = decode_optional(data, i16::from_le_bytes)?;
                 self.db.execute_statement(statement, name, (name, bucket, id, value)).await
             }
-
             ScalarType::uint16 => {
-                let value = data
-                    .map(|v| decode(v, u16::from_le_bytes))
-                    .transpose()?
-                    .map(i32::from);
+                let value = decode_optional(data, u16::from_le_bytes)?.map(i32::from);
                 self.db.execute_statement(statement, name, (name, bucket, id, value)).await
             }
-
             ScalarType::int32 => {
-                let value = data
-                    .map(|v| decode(v, i32::from_le_bytes))
-                    .transpose()?;
+                let value = decode_optional(data, i32::from_le_bytes)?;
                 self.db.execute_statement(statement, name, (name, bucket, id, value)).await
             }
-
             ScalarType::uint32 => {
-                let value = data
-                    .map(|v| decode(v, u32::from_le_bytes))
-                    .transpose()?
-                    .map(i64::from);
+                let value = decode_optional(data, u32::from_le_bytes)?.map(i64::from);
                 self.db.execute_statement(statement, name, (name, bucket, id, value)).await
             }
-
             ScalarType::int64 => {
-                let value = data
-                    .map(|v| decode(v, i64::from_le_bytes))
-                    .transpose()?;
+                let value = decode_optional(data, i64::from_le_bytes)?;
                 self.db.execute_statement(statement, name, (name, bucket, id, value)).await
             }
-
             ScalarType::uint64 => {
                 // uint64 is represented as CQL blob.
                 self.db.execute_statement(statement, name, (name, bucket, id, data)).await
             }
-
             ScalarType::float32 => {
-                let value = data
-                    .map(|v| decode(v, f32::from_le_bytes))
-                    .transpose()?;
+                let value = decode_optional(data, f32::from_le_bytes)?;
                 self.db.execute_statement(statement, name, (name, bucket, id, value)).await
             }
-
             ScalarType::float64 => {
-                let value = data
-                    .map(|v| decode(v, f64::from_le_bytes))
-                    .transpose()?;
+                let value = decode_optional(data, f64::from_le_bytes)?;
                 self.db.execute_statement(statement, name, (name, bucket, id, value)).await
             }
         }
     }
 }
-
-
-fn encode_to_i64(kind: ScalarType, data: Option<Vec<u8>>) -> IOResult<Option<i64>> {
-    let Some(data) = data else {
-        return Ok(None);
-    };
-
-    let value = match kind {
-        ScalarType::bool => {decode(data, |b: [u8; 1]| if b[0] != 0 { 1 } else { 0 })?}
-
-        ScalarType::int8 => {
-            decode(data, i8::from_le_bytes)? as i64
-        }
-
-        ScalarType::uint8 => {
-            decode(data, u8::from_le_bytes)? as i64
-        }
-
-        ScalarType::int16 => {
-            decode(data, i16::from_le_bytes)? as i64
-        }
-
-        ScalarType::uint16 => {
-            decode(data, u16::from_le_bytes)? as i64
-        }
-
-        ScalarType::int32 => {
-            decode(data, i32::from_le_bytes)? as i64
-        }
-
-        ScalarType::uint32 => {
-            decode(data, u32::from_le_bytes)? as i64
-        }
-
-        ScalarType::int64 => {
-            decode(data, i64::from_le_bytes)?
-        }
-
-        ScalarType::uint64 => {
-            decode(data, u64::from_le_bytes)? as i64
-        }
-
-        ScalarType::float32 => {
-            decode(data, f32::from_le_bytes)?.to_bits() as i64
-        }
-
-        ScalarType::float64 => {
-            decode(data, f64::from_le_bytes)?.to_bits() as i64
-        }
-
-        ScalarType::string => {
-            return Err(IOError::new(
-                ErrorKind::InvalidInput,
-                "String is not a scalar numeric type",
-            ));
-        }
-    };
-
-    Ok(Some(value))
-}
-
-fn decode<T, const N: usize>(data: Vec<u8>,f: impl FnOnce([u8; N]) -> T,) -> IOResult<T> {
-    let bytes: [u8; N] = data.try_into()
-        .map_err(|_| IOError::new(ErrorKind::InvalidData, "Invalid data size"))?;
-    Ok(f(bytes))
-}
-
-fn dtype(kind: ScalarType) -> i8{
-    match kind {
-        ScalarType::bool => {0}
-        ScalarType::int8 => {1}
-        ScalarType::uint8 => {2}
-        ScalarType::int16 => {3}
-        ScalarType::uint16 => {4}
-        ScalarType::int32 => {5}
-        ScalarType::uint32 => {6}
-        ScalarType::int64 => {7}
-        ScalarType::uint64 => {8}
-        ScalarType::float32 => {9}
-        ScalarType::float64 => {10}
-        ScalarType::string => {11}
-    }
-}
-
-

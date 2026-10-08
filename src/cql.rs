@@ -3,16 +3,17 @@ use scylla::client::session::Session;
 use tokio::io::SimplexStream;
 use crate::db::DB;
 
+pub const CQL_TYPES: &[&str] = &["text", "boolean", "tinyint", "smallint", "int", "bigint", "float", "double", "blob"];
 
 pub const COLUMN_CHANNEL:&str = "channel";
 pub const COLUMN_BUCKET:&str = "bucket";
 pub const COLUMN_ID:&str = "id";
+pub const COLUMN_TYPE:&str = "dtype";
+pub const COLUMN_DATA:&str = "data";
+
 //pub const COLUMN_SECS:&str = "timestamp_sec";
 //pub const COLUMN_NANOS:&str = "timestamp_nsec";
 
-pub const COLUMN_TYPE:&str = "dtype";
-pub const COLUMN_DATA:&str = "data";
-pub const CQL_TYPES: &[&str] = &["text", "boolean", "tinyint", "smallint", "int", "bigint", "float", "double", "blob"];
 
 
 pub fn now() -> String {
@@ -104,23 +105,5 @@ pub fn insert_data_query(name: &str, with_type_col: bool) -> String {
         DB::keyspace(), name.replace('"', "\"\""),
         COLUMN_CHANNEL, COLUMN_BUCKET, COLUMN_ID, COLUMN_DATA, type_col, type_val
     )
-}
-
-
-pub fn kind_to_cql_type(kind:ScalarType) -> &'static str {
-    match kind {
-        ScalarType::string  => "text",
-        ScalarType::bool    => "boolean",
-        ScalarType::int8    => "tinyint",
-        ScalarType::uint8   => "smallint",
-        ScalarType::int16   => "smallint",
-        ScalarType::uint16  => "int",
-        ScalarType::int32   => "int",
-        ScalarType::uint32  => "bigint",
-        ScalarType::int64   => "bigint",
-        ScalarType::uint64  => "blob",
-        ScalarType::float32 => "float",
-        ScalarType::float64 => "double"
-    }
 }
 

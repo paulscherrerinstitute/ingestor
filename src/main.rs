@@ -9,6 +9,7 @@ mod ingestor;
 mod arguments;
 mod config;
 mod cql;
+mod codec;
 
 use crate::arguments::{Arguments, StartupState};
 use crate::db::DB;

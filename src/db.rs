@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::{Arguments, app, cql};
-use bsread::{channel, IOError, IOResult, ScalarType};
+use bsread::{IOError, IOResult};
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::observability::metrics::Metrics;
@@ -15,7 +15,6 @@ use scylla::deserialize::row::DeserializeRow;
 use tokio::sync::{OnceCell, RwLock};
 use std::sync::OnceLock;
 use scylla::_macro_internal::SerializeRow;
-use crate::arguments::StorageLayout;
 
 #[derive(scylla::DeserializeRow)]
 struct TableName {
@@ -66,7 +65,7 @@ impl DB {
 
                 if let Err(e) = session.query_unpaged(cql::now(), &[]).await{
                     log::error!("Error connecting to database {}: {}", &arguments.database, e);
-                    //return Err(IOError::new(ErrorKind::ConnectionRefused, format!("Error connecting to database: {}", e)));
+                    return Err(IOError::new(ErrorKind::ConnectionRefused, format!("Error connecting to database: {}", e)));
                 } else {
                     log::info!("Connected to database {}", &arguments.database);
                 }
