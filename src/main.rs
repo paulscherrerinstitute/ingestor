@@ -43,13 +43,11 @@ async fn main() {
     let address = format!("0.0.0.0:{}", arguments.port);
     let listener = tokio::net::TcpListener::bind(address).await.unwrap();
 
-    if arguments.pause{
-        app.write().await.set_db_enabled(false);
-    }
     if arguments.start.is_started() {
-        app.write().await.start().await.unwrap();
         if arguments.start == StartupState::Paused {
             app.write().await.pause().await.unwrap();
+        } else {
+            app.write().await.start().await.unwrap();
         }
     }
 

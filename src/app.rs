@@ -163,7 +163,11 @@ impl App {
     }
 
     pub async fn pause(&mut self) -> IOResult<()> {
-        self.assertState(State::Started)?;
+        if self.state == State::Stopped{
+            self.init().await;
+        } else {
+            self.assertState(State::Started)?;
+        }
         self.db.set_enabled(false);
         self.set_state(State::Paused);
         Ok(())
@@ -174,43 +178,48 @@ impl App {
     }
 
     pub async fn start(&mut self) -> IOResult<()> {
-        if !self.is_started(){
-            log::info!("Starting service");
-            self.set_state(State::Starting);
-
-            self.db.connect().await.inspect_err(|e| {
-                log::error!("Error connecting to database: {:?}", e);
-                self.set_state(State::Error);
-            })?;
-            //let session = self.db.read().await.session();
-            //self.ingestor.write().await.set_session(session);
-            self.ingestor.init().await.inspect_err(|e| {
-                log::error!("Error initializing ingestor: {:?}", e);
-                self.set_state(State::Error);
-            })?;
-
-            self.engine_client.send_config(self.config.clone()).await.inspect_err(|e| {
-                log::error!("Error sending config in application startup: {:?}", e);
-                self.set_state(State::Error);
-            })?;
-            self.engine_client.connect().await.inspect_err(|e| {
-                log::error!("Error connecting in application startup: {:?}", e);
-                self.set_state(State::Error);
-            })?;
-            let engine_client = self.engine_client.clone();
-            let timer_handle  = tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(10));
-                loop {
-                    interval.tick().await;
-                    engine_client.on_timer().await;
-                }
-            });
-            self.timer_handle = Some(timer_handle);
-            self.set_state(State::Started);
-        } else if self.state == State::Paused {
+        if self.state != State::Started {
+            if !self.is_started() {
+                self.init().await;
+            }
             self.db.set_enabled(true);
             self.set_state(State::Started);
         }
+        Ok(())
+    }
+
+    async fn init(&mut self) -> IOResult<()> {
+        log::info!("Starting service");
+        self.set_state(State::Starting);
+
+        self.db.connect().await.inspect_err(|e| {
+            log::error!("Error connecting to database: {:?}", e);
+            self.set_state(State::Error);
+        })?;
+        //let session = self.db.read().await.session();
+        //self.ingestor.write().await.set_session(session);
+        self.ingestor.init().await.inspect_err(|e| {
+            log::error!("Error initializing ingestor: {:?}", e);
+            self.set_state(State::Error);
+        })?;
+
+        self.engine_client.send_config(self.config.clone()).await.inspect_err(|e| {
+            log::error!("Error sending config in application startup: {:?}", e);
+            self.set_state(State::Error);
+        })?;
+        self.engine_client.connect().await.inspect_err(|e| {
+            log::error!("Error connecting in application startup: {:?}", e);
+            self.set_state(State::Error);
+        })?;
+        let engine_client = self.engine_client.clone();
+        let timer_handle  = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                interval.tick().await;
+                engine_client.on_timer().await;
+            }
+        });
+        self.timer_handle = Some(timer_handle);
         Ok(())
     }
 

@@ -14,11 +14,15 @@ pub const TABLE_SCALARS:&str = "scalars";
 pub const TABLE_WAVEFORMS:&str = "waveforms";
 pub const TABLE_STRINGS:&str = "strings";
 
+pub const BUCKET_DIVISOR_SCALARS:i64 = 1_000_000;
+pub const BUCKET_DIVISOR_STRINGS:i64 = 100_000;
+pub const BUCKET_DIVISOR_WAVEFORMS:i64 = 10_000;
+
 pub fn get_table_name(layout:&StorageLayout, channel_name:&str, kind:ScalarType, shape:&Option<Vec<u32>>) -> &'static str {
     match layout {
         StorageLayout::Typed => {
             if channel::is_array(shape) {
-                "blob"
+                TABLE_WAVEFORMS
             }  else {
                 kind_to_cql_type(kind)
             }
@@ -48,11 +52,11 @@ impl Ingestor {
     }
 
     fn is_blob_table(&self, kind:ScalarType, shape:&Option<Vec<u32>>) -> bool {
-        if self.arguments.storage_layout.is_typed() {
-           if  kind == ScalarType::uint64 {
-               return true;
-           }
-        }
+        //if self.arguments.storage_layout.is_typed() {
+        //   if  kind == ScalarType::uint64 {
+        //       return true;
+        //   }
+        //}
         channel::is_array(shape)
     }
 
@@ -63,15 +67,27 @@ impl Ingestor {
         false
     }
 
+    fn bucket(&self, id:i64, kind:ScalarType, shape:&Option<Vec<u32>>) -> i64 {
+        let divider = if channel::is_array(shape){
+            BUCKET_DIVISOR_WAVEFORMS
+        } else if kind == ScalarType::string {
+            BUCKET_DIVISOR_STRINGS
+        } else {
+            BUCKET_DIVISOR_SCALARS
+        };
+        id/divider
+    }
+
 
     pub async fn init(&self) -> IOResult<()> {
         let session =  self.db.session().expect("Database session not initialized");
         if self.arguments.storage_layout == StorageLayout::Typed {
+            self.db.create_table(TABLE_WAVEFORMS, "blob", true).await?;
+            self.insert_statements.write().await.insert(TABLE_WAVEFORMS.to_string(), self.db.create_insert_statement(TABLE_WAVEFORMS, true).await?);
             for cql_type in cql::CQL_TYPES {
                 let table_name = cql_type;
-                let with_type_col = *cql_type=="blob";
-                self.db.create_table(table_name, cql_type, with_type_col).await?;
-                self.insert_statements.write().await.insert(table_name.to_string(),self.db.create_insert_statement(&table_name, with_type_col).await?);
+                self.db.create_table(table_name, cql_type, false).await?;
+                self.insert_statements.write().await.insert(table_name.to_string(),self.db.create_insert_statement(&table_name, false).await?);
             }
         }  else if self.arguments.storage_layout == StorageLayout::Default {
             self.db.create_table(TABLE_WAVEFORMS, "blob", true).await?;
@@ -100,7 +116,7 @@ impl Ingestor {
             //let timestamp_nsec = tm.1 as i64;
             let insert_statement = self.insert_statements.read().await.get(&table_name.to_string()).cloned();
             //Lock released
-            let bucket = 0;
+            let bucket = self.bucket(id, kind, &shape);
             match insert_statement{
                 None => {
                     log::warn!("Insert statement with name {} not found", &name);

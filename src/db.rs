@@ -50,7 +50,7 @@ impl DB {
     pub fn new(arguments: Arc<Arguments>) -> Self {
         let keyspace = format! ("db_{:?}", arguments.storage_layout).to_lowercase();
         KEYSPACE.set(keyspace.to_string()).expect("KEYSPACE has already been initialized");
-        Self { arguments, session: OnceCell::new(), enabled: AtomicBool::new(true) }
+        Self { arguments, session: OnceCell::new(), enabled: AtomicBool::new(false) }
     }
 
     pub fn keyspace() -> &'static String {
