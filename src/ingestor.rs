@@ -14,6 +14,8 @@ pub const TABLE_SCALARS:&str = "scalars";
 pub const TABLE_WAVEFORMS:&str = "waveforms";
 pub const TABLE_STRINGS:&str = "strings";
 
+pub const TABLE_CHANNEL_METADATA:&str = "channel_metadata";
+
 pub const BUCKET_DIVISOR_SCALARS:i64 = 1_000_000;
 pub const BUCKET_DIVISOR_STRINGS:i64 = 100_000;
 pub const BUCKET_DIVISOR_WAVEFORMS:i64 = 10_000;
@@ -82,29 +84,37 @@ impl Ingestor {
     pub async fn init(&self) -> IOResult<()> {
         let session =  self.db.session().expect("Database session not initialized");
         if self.arguments.storage_layout == StorageLayout::Typed {
-            self.db.create_table(TABLE_WAVEFORMS, "blob", true).await?;
-            self.insert_statements.write().await.insert(TABLE_WAVEFORMS.to_string(), self.db.create_insert_statement(TABLE_WAVEFORMS, true).await?);
+            self.db.create_data_table(TABLE_WAVEFORMS, "blob", true).await?;
+            self.insert_statements.write().await.insert(TABLE_WAVEFORMS.to_string(), self.db.create_data_insert_statement(TABLE_WAVEFORMS, true).await?);
             for cql_type in cql::CQL_TYPES {
                 let table_name = cql_type;
-                self.db.create_table(table_name, cql_type, false).await?;
-                self.insert_statements.write().await.insert(table_name.to_string(),self.db.create_insert_statement(&table_name, false).await?);
+                self.db.create_data_table(table_name, cql_type, false).await?;
+                self.insert_statements.write().await.insert(table_name.to_string(),self.db.create_data_insert_statement(&table_name, false).await?);
             }
         }  else if self.arguments.storage_layout == StorageLayout::Default {
-            self.db.create_table(TABLE_WAVEFORMS, "blob", true).await?;
-            self.db.create_table(TABLE_STRINGS, "text", false).await?;
-            self.db.create_table(TABLE_SCALARS, "bigint", true).await?;
-            self.insert_statements.write().await.insert(TABLE_WAVEFORMS.to_string(), self.db.create_insert_statement(TABLE_WAVEFORMS, true).await?);
-            self.insert_statements.write().await.insert(TABLE_STRINGS.to_string(), self.db.create_insert_statement(TABLE_STRINGS, false).await?);
-            self.insert_statements.write().await.insert(TABLE_SCALARS.to_string(), self.db.create_insert_statement(TABLE_SCALARS, true).await?);
+            self.db.create_data_table(TABLE_WAVEFORMS, "blob", true).await?;
+            self.db.create_data_table(TABLE_STRINGS, "text", false).await?;
+            self.db.create_data_table(TABLE_SCALARS, "bigint", true).await?;
+            self.insert_statements.write().await.insert(TABLE_WAVEFORMS.to_string(), self.db.create_data_insert_statement(TABLE_WAVEFORMS, true).await?);
+            self.insert_statements.write().await.insert(TABLE_STRINGS.to_string(), self.db.create_data_insert_statement(TABLE_STRINGS, false).await?);
+            self.insert_statements.write().await.insert(TABLE_SCALARS.to_string(), self.db.create_data_insert_statement(TABLE_SCALARS, true).await?);
+        }
+        self.db.create_channel_metadata_table(TABLE_CHANNEL_METADATA).await?;
+        self.insert_statements.write().await.insert(TABLE_CHANNEL_METADATA.to_string(), self.db.create_channel_metadata_insert_statement(TABLE_CHANNEL_METADATA).await?);
+        Ok(())
+    }
+
+    pub async fn on_header_change(&self, name:String, kind:ScalarType, shape:Option<Vec<u32>>, elements:usize, size:usize, id: u64, tm: (u64, u64)) -> IOResult<()>{
+        let insert_statement = self.insert_statements.read().await.get(TABLE_CHANNEL_METADATA).cloned();
+        if let Some(statement) = insert_statement {
+            self.execute_statement_channel_metadata(&statement, &name, kind, elements, id as i64).await?;
+        } else {
+            log::error!("Insert statement for channel metadata table not found");
         }
         Ok(())
     }
 
-    pub async fn on_header_change(&self, name:String, kind:ScalarType, shape:Option<Vec<u32>>, size:usize) -> IOResult<()>{
-        Ok(())
-    }
-
-    pub async fn append_record(&self, name:String,  kind:ScalarType, shape:Option<Vec<u32>>, id: u64, tm: (u64, u64), data:Option<Vec<u8>>) -> IOResult<()> {
+    pub async fn append_record(&self, name:String,  kind:ScalarType, shape:Option<Vec<u32>>, elements:usize, id: u64, tm: (u64, u64), data:Option<Vec<u8>>) -> IOResult<()> {
         if self.db.enabled_session().is_some() {
             let table_name = get_table_name(&self.arguments.storage_layout, &name, kind, &shape);
             let id = id as i64;
@@ -114,7 +124,7 @@ impl Ingestor {
             
             //let timestamp_sec = tm.0 as i64;
             //let timestamp_nsec = tm.1 as i64;
-            let insert_statement = self.insert_statements.read().await.get(&table_name.to_string()).cloned();
+            let insert_statement = self.insert_statements.read().await.get(table_name).cloned();
             //Lock released
             let bucket = self.bucket(id, kind, &shape);
             match insert_statement{
@@ -276,5 +286,9 @@ impl Ingestor {
                 self.db.execute_statement(statement, name, (name, bucket, id, value)).await
             }
         }
+    }
+    async fn execute_statement_channel_metadata(&self, statement: &PreparedStatement, name: &str, kind: ScalarType, count:usize, from: i64) -> IOResult<()> {
+        let dtype = kind_to_dtype(kind);
+        self.db.execute_statement(statement, name, (name, from, dtype, count as i32)).await
     }
 }

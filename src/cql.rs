@@ -10,6 +10,9 @@ pub const COLUMN_BUCKET:&str = "bucket";
 pub const COLUMN_ID:&str = "id";
 pub const COLUMN_TYPE:&str = "dtype";
 pub const COLUMN_DATA:&str = "data";
+pub const COLUMN_FROM:&str = "from_pulse_id";
+pub const COLUMN_COUNT:&str = "element_count";
+
 
 //pub const COLUMN_SECS:&str = "timestamp_sec";
 //pub const COLUMN_NANOS:&str = "timestamp_nsec";
@@ -92,7 +95,6 @@ pub fn create_data_table(name: &str, cql_type: &str, with_type_col: bool) -> Str
     )
 }
 
-
 pub fn insert_data_query(name: &str, with_type_col: bool) -> String {
     let type_col = if with_type_col { format!(", {}", COLUMN_TYPE) } else {String::new()};
     let type_val = if with_type_col { ", ?".to_string() } else {String::new()};
@@ -106,4 +108,41 @@ pub fn insert_data_query(name: &str, with_type_col: bool) -> String {
         COLUMN_CHANNEL, COLUMN_BUCKET, COLUMN_ID, COLUMN_DATA, type_col, type_val
     )
 }
+
+pub fn create_channel_metadata_table(name: &str) -> String {
+    format!(
+        r#"
+            CREATE TABLE IF NOT EXISTS "{}"."{}" (
+                {} text,
+                {} bigint,
+                {} tinyint,
+                {} int,
+                PRIMARY KEY (({}), {})
+            ) WITH CLUSTERING ORDER BY ({} DESC)
+              AND default_time_to_live = 2678400
+              AND gc_grace_seconds = 0
+              AND compaction = {{'class': 'SizeTieredCompactionStrategy'}};
+         "#,
+        DB::keyspace(), name.replace('"', "\"\""),
+        COLUMN_CHANNEL,
+        COLUMN_FROM,
+        COLUMN_TYPE,
+        COLUMN_COUNT,
+        COLUMN_CHANNEL,COLUMN_FROM,
+        COLUMN_FROM,
+    )
+}
+
+pub fn insert_channel_metadata_query(name: &str) -> String {
+    format!(
+        r#"
+            INSERT INTO "{}"."{}"
+                 ({}, {}, {}, {})
+            VALUES (?, ?, ?, ?)
+        "#,
+        DB::keyspace(), name.replace('"', "\"\""),
+        COLUMN_CHANNEL, COLUMN_FROM, COLUMN_TYPE, COLUMN_COUNT
+    )
+}
+
 

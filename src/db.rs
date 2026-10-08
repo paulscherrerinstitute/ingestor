@@ -104,11 +104,11 @@ impl DB {
         Ok(ret)
     }
 
-    pub async fn create_table(&self, table_name: &str, cql_type:&str, with_type_col: bool) -> IOResult<()> {
+    pub async fn create_data_table(&self, table_name: &str, cql_type:&str, with_type_col: bool) -> IOResult<()> {
         if self.arguments.create {
             let query = cql::create_data_table(&table_name, cql_type, with_type_col);
             if let Err(e) = self.query(&query).await {
-                log::error!("Error creating table: {}", table_name);
+                log::error!("Error creating data table: {}", table_name);
                 return Err(e);
             }
         } else {
@@ -124,6 +124,22 @@ impl DB {
         Ok(())
     }
 
+    pub async fn create_channel_metadata_table(&self, table_name: &str) -> IOResult<()> {
+        if self.arguments.create {
+            let query = cql::create_channel_metadata_table(&table_name);
+            if let Err(e) = self.query(&query).await {
+                log::error!("Error creating channel metadata table: {}", table_name);
+                return Err(e);
+            }
+        } else {
+            if !self.table_exists(table_name).await?{
+                log::error!("Channel metadata table does not exist: {}", table_name);
+                return Err(IOError::new(ErrorKind::NotFound, format!("Table does not exist: {}", table_name)));
+            }
+        }
+        Ok(())
+    }
+    
 
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Relaxed);
@@ -202,12 +218,20 @@ impl DB {
         }
     }
 
-    pub async fn create_insert_statement(&self, table_name: &str, with_type_col: bool) -> IOResult<PreparedStatement> {
+    pub async fn create_data_insert_statement(&self, table_name: &str, with_type_col: bool) -> IOResult<PreparedStatement> {
         let query =  cql::insert_data_query(table_name,with_type_col);
         let statement = self.get_session()?.prepare(query).await
             .map_err(|e| {IOError::other(format!("Error preparing insert for table {}: {}", table_name, e))})?;
         Ok(statement)
     }
+
+    pub async fn create_channel_metadata_insert_statement(&self, table_name: &str) -> IOResult<PreparedStatement> {
+        let query =  cql::insert_channel_metadata_query(table_name);
+        let statement = self.get_session()?.prepare(query).await
+            .map_err(|e| {IOError::other(format!("Error preparing insert for table {}: {}", table_name, e))})?;
+        Ok(statement)
+    }
+    
 
     pub async fn insert_with_type(&self, table_name: &str, name: &str, values: impl SerializeRow,) -> IOResult<()> { ;
         let query = cql::insert_data_query(&table_name, true);

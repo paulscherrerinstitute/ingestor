@@ -32,12 +32,12 @@ impl ChannelProcessor {
         }
 
         if header_changed {
-            if let Err(e) = self.ingestor.on_header_change(config.name(), config.kind(), config.shape(), config.size()).await{
-                log::error!("Error creating table {} {} {:?} {}: {}", config.name(), config.kind(), config.shape(), config.size(), e);
+            if let Err(e) = self.ingestor.on_header_change(config.name(), config.kind(), config.shape(), config.elements(), config.size(), id, tm).await{
+                log::error!("Error on header change of {} {} {:?} {} {}: {}", config.name(), config.kind(), config.shape(), config.elements(), config.size(), e);
             }
         }
-        let (name, kind, shape) = config.into_parts();
-        if let Err(e) = self.ingestor.append_record(name,kind, shape, id, tm, data).await{
+        let (name, kind, shape, elements) = config.into_parts();
+        if let Err(e) = self.ingestor.append_record(name,kind, shape, elements, id, tm, data).await{
             log::error!("Error appending record for id {}: {}", id, e);
         }
     }
