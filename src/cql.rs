@@ -5,11 +5,11 @@ use crate::db::DB;
 
 pub const CQL_TYPES: &[&str] = &["text", "boolean", "tinyint", "smallint", "int", "bigint", "float", "double", "blob"];
 
-pub const COLUMN_CHANNEL:&str = "channel";
-pub const COLUMN_BUCKET:&str = "bucket";
-pub const COLUMN_ID:&str = "id";
+pub const COLUMN_CHANNEL:&str = "channel_name";
+pub const COLUMN_BUCKET:&str = "pulse_bucket";
+pub const COLUMN_ID:&str = "pulse_id";
 pub const COLUMN_TYPE:&str = "dtype";
-pub const COLUMN_DATA:&str = "data";
+pub const COLUMN_DATA:&str = "val";
 pub const COLUMN_FROM:&str = "from_pulse_id";
 pub const COLUMN_COUNT:&str = "element_count";
 
@@ -144,5 +144,34 @@ pub fn insert_channel_metadata_query(name: &str) -> String {
         COLUMN_CHANNEL, COLUMN_FROM, COLUMN_TYPE, COLUMN_COUNT
     )
 }
+
+pub fn fetch_channels_query(name: &str) -> String {
+    format!(
+        r#"
+            SELECT DISTINCT {}
+            FROM "{}"."{}";
+        "#,
+        COLUMN_CHANNEL,
+        DB::keyspace(), name.replace('"', "\"\""),
+    )
+}
+
+pub fn fetch_channel_metadata_query(name: &str, channnel: &str) -> String {
+    format!(
+        r#"
+            SELECT {}, {}, {}, {}
+            FROM "{}"."{}"
+            WHERE {} = '{}'
+            LIMIT 1;
+        "#,
+        COLUMN_CHANNEL, COLUMN_FROM, COLUMN_TYPE, COLUMN_COUNT,
+        DB::keyspace(), name.replace('"', "\"\""),
+        COLUMN_CHANNEL, channnel
+    )
+}
+
+
+
+
 
 

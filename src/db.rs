@@ -15,6 +15,8 @@ use scylla::deserialize::row::DeserializeRow;
 use tokio::sync::{OnceCell, RwLock};
 use std::sync::OnceLock;
 use scylla::_macro_internal::SerializeRow;
+use crate::arguments::StorageLayout;
+use crate::cql::COLUMN_CHANNEL;
 
 #[derive(scylla::DeserializeRow)]
 struct TableName {
@@ -36,6 +38,18 @@ struct ColumnType {
     cql_type: String,
 }
 
+#[derive(scylla::DeserializeRow)]
+struct ChannelName {
+    channel_name: String,
+}
+#[derive(scylla::DeserializeRow, Debug, Clone)]
+pub struct ChannelMetadata {
+    pub channel_name: String,
+    pub from_pulse_id: i64,
+    pub dtype: i8,
+    pub element_count: i32,
+}
+
 pub struct DB {
     arguments: Arc<Arguments>,
     session: OnceCell<Session>,
@@ -44,11 +58,17 @@ pub struct DB {
 
 const SHARED_TABLE_NAME:&str = "data";
 
+const KEYSPACE_DEFAULT:&str = "beam_data";
+
+
 static KEYSPACE: OnceLock<String> = OnceLock::new();
 
 impl DB {
     pub fn new(arguments: Arc<Arguments>) -> Self {
-        let keyspace = format! ("db_{:?}", arguments.storage_layout).to_lowercase();
+        let keyspace = match arguments.storage_layout{
+            StorageLayout::Default => {KEYSPACE_DEFAULT.to_string()},
+            _ => {format! ("db_{:?}", arguments.storage_layout).to_lowercase()}
+        };
         KEYSPACE.set(keyspace.to_string()).expect("KEYSPACE has already been initialized");
         Self { arguments, session: OnceCell::new(), enabled: AtomicBool::new(false) }
     }
@@ -139,7 +159,7 @@ impl DB {
         }
         Ok(())
     }
-    
+
 
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Relaxed);
@@ -209,6 +229,7 @@ impl DB {
         let rows = self.query_rows::<Column>(&cql::columns(table),).await?;
         Ok(rows.into_iter().map(|r| r.column_name).collect())
     }
+
     pub async fn column_type(&self, table: &str,column: &str,) -> IOResult<String> {
         let rows = self.query_rows::<ColumnType>(&cql::column_type(table, column),).await?;
         if rows.is_empty() {
@@ -231,7 +252,7 @@ impl DB {
             .map_err(|e| {IOError::other(format!("Error preparing insert for table {}: {}", table_name, e))})?;
         Ok(statement)
     }
-    
+
 
     pub async fn insert_with_type(&self, table_name: &str, name: &str, values: impl SerializeRow,) -> IOResult<()> { ;
         let query = cql::insert_data_query(&table_name, true);
@@ -253,11 +274,23 @@ impl DB {
         Ok(())
     }
 
+    pub async fn fetch_channels(&self,table: &str,) -> IOResult<Vec<String>> {
+        let rows = self.query_rows::<ChannelName>(&cql::fetch_channels_query(table),).await?;
+        Ok(rows.into_iter().map(|r| r.channel_name).collect())
+    }
+
+    pub async fn fetch_channel_metadata(&self,table: &str, channel: &str) -> IOResult<ChannelMetadata> {
+        let mut rows = self.query_rows::<ChannelMetadata>(&cql::fetch_channel_metadata_query(table, channel),).await?;
+        if rows.is_empty() {
+            Err(IOError::other(format!("Channel not found: {}-{}", table, channel)))
+        } else {
+            Ok(rows.remove(0))
+        }
+    }
 
     pub fn metrics(&self) -> Option<ScyllaMetrics>{
         Some(ScyllaMetrics::from_metrics(self.session()?.get_metrics()))
     }
-
 
     async fn query_rows<T>(&self, query: &str) -> IOResult<Vec<T>>
     where
