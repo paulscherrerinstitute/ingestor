@@ -163,28 +163,28 @@ impl App {
         self.state = state;
     }
 
-    async fn set_db_enabled(&mut self, enabled:bool) -> IOResult<()> {
+    async fn set_db_enabled(&mut self, enabled:bool){
         if enabled != self.db.is_enabled() {
             self.db.set_enabled(enabled);
             if (enabled){
                 //Initialize BSREAD header info, so will receive header changed events on first message
-                log::info!("Enabling database access and resetting BSREAD headers");
-                self.reset_headers().await?;
+                log::info!("Enabled database access and resetting BSREAD headers");
+                if let Err(e) = self.reset_headers().await{
+                    log::error!("Error resetting headers: {}", e);
+                }
             } else {
-                log::info!("Disabling database access");
+                log::info!("Disabled database access");
             }
         }
-        Ok(())
     }
-
-
+    
     pub async fn pause(&mut self) -> IOResult<()> {
         if self.state == State::Stopped{
-            self.init(false).await;
+            self.init(false).await?;
         } else {
             self.assertState(State::Started)?;
         }
-        self.set_db_enabled(false).await?;
+        self.set_db_enabled(false).await;
         self.set_state(State::Paused);
         Ok(())
     }
@@ -192,7 +192,7 @@ impl App {
     pub async fn start(&mut self) -> IOResult<()> {
         if self.state != State::Started {
             if !self.is_started() {
-                self.init(true).await;
+                self.init(true).await?;
             }
         }
         self.set_db_enabled(true).await;
@@ -216,7 +216,7 @@ impl App {
         })?;
 
         if database_enabled {
-            self.set_db_enabled(true).await;
+            self.set_db_enabled(true);
         }
 
         self.engine_client.send_config(self.config.clone()).await.inspect_err(|e| {
@@ -232,7 +232,9 @@ impl App {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
             loop {
                 interval.tick().await;
-                engine_client.on_timer().await;
+                if let Err(e) = engine_client.on_timer().await{
+                    log::error!("Error on engine timer: {:?}", e);
+                }
             }
         });
         self.timer_handle = Some(timer_handle);

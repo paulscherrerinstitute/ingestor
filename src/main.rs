@@ -44,11 +44,11 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(address).await.unwrap();
 
     if arguments.start.is_started() {
-        //if arguments.start == StartupState::Paused {
-        //    app.write().await.pause().await.unwrap();
-        //} else {
+        if arguments.start == StartupState::Paused {
+            app.write().await.pause().await.unwrap();
+        } else {
             app.write().await.start().await.unwrap();
-        //}
+        }
     }
 
     log::info!("REST API listening on {}", listener.local_addr().unwrap());
