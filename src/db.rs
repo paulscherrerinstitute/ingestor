@@ -244,9 +244,7 @@ impl DB {
         let query =  cql::insert_data_query(table_name,with_type_col);
         let mut statement = self.get_session()?.prepare(query).await
             .map_err(|e| {IOError::other(format!("Error preparing insert for table {}: {}", table_name, e))})?;
-        println!("{}", statement.get_is_idempotent());
         statement.set_is_idempotent(true);
-        println!("{}", statement.get_is_idempotent());
         Ok(statement)
     }
 
