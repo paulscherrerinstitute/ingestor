@@ -143,18 +143,18 @@ impl Ingestor {
         Ok(())
     }
 
-    pub async fn on_header_change(&self, name:String, kind:ScalarType, shape:Option<Vec<u32>>, elements:usize, size:usize, id: u64, tm: (u64, u64)) -> IOResult<()>{
-        let metadata = self.channel_metadata.read().await.get(&name).cloned(); //Lock released
-        let changed = match metadata {
-            None => {true}
-            Some(metadata) => {
-                metadata.count != elements || metadata.kind != kind
-            }
-        };
-        if changed {
-            log::info!("Channel {} metadata changed: kind={:?} count={}", &name, kind,  elements);
-            self.channel_metadata.write().await.insert(name.clone(), ChannelMetadata{from: id, kind: kind, count: elements});
-            if self.db.enabled_session().is_some() {
+    pub async fn on_header_change(&self, name:String, kind:ScalarType, shape:Option<Vec<u32>>, elements:usize, size:usize, id: u64, tm: (u64, u64)) -> IOResult<()> {
+        if self.db.enabled_session().is_some() {
+            let metadata = self.channel_metadata.read().await.get(&name).cloned(); //Lock released
+            let changed = match metadata {
+                None => { true }
+                Some(metadata) => {
+                    metadata.count != elements || metadata.kind != kind
+                }
+            };
+            if changed {
+                log::info!("Channel {} metadata changed: kind={:?} count={}", &name, kind,  elements);
+                self.channel_metadata.write().await.insert(name.clone(), ChannelMetadata { from: id, kind: kind, count: elements });
                 let insert_statement = self.insert_statements.read().await.get(TABLE_CHANNEL_METADATA).cloned();
                 if let Some(statement) = insert_statement {
                     if let Err(e) = self.execute_statement_channel_metadata(&statement, &name, kind, elements, id as i64).await {
@@ -168,7 +168,7 @@ impl Ingestor {
         Ok(())
     }
 
-    pub async fn append_record(&self, name:String,  kind:ScalarType, shape:Option<Vec<u32>>, elements:usize, id: u64, tm: (u64, u64), data:Option<Vec<u8>>) -> IOResult<()> {
+pub async fn append_record(&self, name:String,  kind:ScalarType, shape:Option<Vec<u32>>, elements:usize, id: u64, tm: (u64, u64), data:Option<Vec<u8>>) -> IOResult<()> {
         if self.db.enabled_session().is_some() {
             let table_name = get_table_name(&self.arguments.storage_layout, &name, kind, &shape);
             let id = id as i64;
