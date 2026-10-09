@@ -42,13 +42,14 @@ struct ColumnType {
 struct ChannelName {
     channel_name: String,
 }
-#[derive(scylla::DeserializeRow, Debug, Clone)]
+#[derive(scylla::DeserializeRow, Debug)]
 pub struct ChannelMetadata {
     pub channel_name: String,
     pub from_pulse_id: i64,
     pub dtype: i8,
     pub element_count: i32,
 }
+
 
 pub struct DB {
     arguments: Arc<Arguments>,

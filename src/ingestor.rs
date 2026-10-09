@@ -5,11 +5,12 @@ use crate::DB;
 use crate::cql;
 use crate::codec::*;
 use std::sync::Arc;
-use bsread::{channel, IOError, IOResult, ScalarType};
+use bsread::{channel, IOError, IOResult, ScalarType, SocketType};
+use log::error;
 use scylla::statement::prepared::PreparedStatement;
 use tokio::sync::RwLock;
 use crate::arguments::StorageLayout;
-use crate::db::ChannelMetadata;
+use crate::config::SocketKind;
 
 pub const TABLE_SCALARS:&str = "measurements";
 pub const TABLE_WAVEFORMS:&str = "waveforms";
@@ -42,6 +43,20 @@ pub fn get_table_name(layout:&StorageLayout, channel_name:&str, kind:ScalarType,
     }
 }
 
+#[derive( Debug, Clone)]
+pub struct ChannelMetadata {
+    from: u64,
+    kind: ScalarType,
+    count: usize,
+}
+
+impl From<crate::db::ChannelMetadata> for ChannelMetadata {
+    fn from(metadata: crate::db::ChannelMetadata) -> Self {
+        Self{from: metadata.from_pulse_id as u64,kind: dtype_to_kind(metadata.dtype as u8),count: metadata.element_count as usize,
+        }
+    }
+}
+
 pub struct Ingestor {
     arguments: Arc<Arguments>,
     db: Arc<DB>,
@@ -52,24 +67,9 @@ pub struct Ingestor {
 
 impl Ingestor {
     pub fn new(arguments:Arc<Arguments>, db:Arc<DB>) -> Self {
-        Self { arguments, db, insert_statements: RwLock::new(HashMap::new()), channel_metadata:RwLock::new(HashMap::new()}
+        Self { arguments, db, insert_statements: RwLock::new(HashMap::new()), channel_metadata:RwLock::new(HashMap::new())}
     }
 
-    fn is_blob_table(&self, kind:ScalarType, shape:&Option<Vec<u32>>) -> bool {
-        //if self.arguments.storage_layout.is_typed() {
-        //   if  kind == ScalarType::uint64 {
-        //       return true;
-        //   }
-        //}
-        channel::is_array(shape)
-    }
-
-    fn is_scalar_i64_table(&self, kind:ScalarType, shape:&Option<Vec<u32>>) -> bool {
-        if self.arguments.storage_layout == StorageLayout::Default {
-            return !channel::is_array(shape) && kind != ScalarType::string;
-        }
-        false
-    }
 
     fn bucket(&self, id:i64, kind:ScalarType, shape:&Option<Vec<u32>>) -> i64 {
         let divider = if channel::is_array(shape){
@@ -103,7 +103,7 @@ impl Ingestor {
         }
         self.db.create_channel_metadata_table(TABLE_CHANNEL_METADATA).await?;
         self.insert_statements.write().await.insert(TABLE_CHANNEL_METADATA.to_string(), self.db.create_channel_metadata_insert_statement(TABLE_CHANNEL_METADATA).await?);
-/*
+
         let channels = self.db.fetch_channels(TABLE_CHANNEL_METADATA).await;
         match channels {
             Ok(channels) => {
@@ -111,43 +111,47 @@ impl Ingestor {
                     let metadata = self.db.fetch_channel_metadata(TABLE_CHANNEL_METADATA, &channel).await;
                     match metadata {
                         Ok(metadata) => {
-                            println!("{:?}", metadata);
+                            self.channel_metadata.write().await.insert(channel, ChannelMetadata::from(metadata));
                         }
                         Err(e) => {
-                            println!("{:?}", e);
+                            log::error!("Error fetching channel {} metadata: {}", channel, e);
                         }
                     }
                 }
+                let channel_metadata = self.channel_metadata.read().await;
+                for (channel,metadata) in  channel_metadata.iter() {
+                    log::info!("Channel {} metadata initialized: kind={:?} count={}", &channel, metadata.kind,  metadata.count);
+                }
             }
             Err(e) => {
-                println!("{:?}", e);
+                log::error!("Error fetching channel names: {}", e);
             }
         }
-*/
-
         Ok(())
     }
 
     pub async fn on_header_change(&self, name:String, kind:ScalarType, shape:Option<Vec<u32>>, elements:usize, size:usize, id: u64, tm: (u64, u64)) -> IOResult<()>{
-//        let metadata = self.channel_metadata.read().await.get(&name).cloned();
-
-        if self.db.enabled_session().is_some() {
-            let insert_statement = self.insert_statements.read().await.get(TABLE_CHANNEL_METADATA).cloned();
-            if let Some(statement) = insert_statement {
-                self.execute_statement_channel_metadata(&statement, &name, kind, elements, id as i64).await?;
-            } else {
-                log::error!("Insert statement for channel metadata table not found");
-            }
-        }
-
-/*
+        let metadata = self.channel_metadata.read().await.get(&name).cloned(); //Lock released
         let changed = match metadata {
             None => {true}
             Some(metadata) => {
-                metadata.element_count != elements  || metadata.dtype != kind_to_dtype(kind)
+                metadata.count != elements || metadata.kind != kind
+            }
+        };
+        if changed {
+            log::info!("Channel {} metadata changed: kind={:?} count={}", &name, kind,  elements);
+            self.channel_metadata.write().await.insert(name.clone(), ChannelMetadata{from: id, kind: kind, count: elements});
+            if self.db.enabled_session().is_some() {
+                let insert_statement = self.insert_statements.read().await.get(TABLE_CHANNEL_METADATA).cloned();
+                if let Some(statement) = insert_statement {
+                    if let Err(e) = self.execute_statement_channel_metadata(&statement, &name, kind, elements, id as i64).await {
+                        log::error!("Error adding metadata for channel {}: {}", &name, e);
+                    }
+                } else {
+                    log::error!("Insert statement for channel metadata table not found");
+                }
             }
         }
-*/
         Ok(())
     }
 
@@ -161,24 +165,27 @@ impl Ingestor {
             
             //let timestamp_sec = tm.0 as i64;
             //let timestamp_nsec = tm.1 as i64;
-            let insert_statement = self.insert_statements.read().await.get(table_name).cloned();
-            //Lock released
+            let insert_statement = self.insert_statements.read().await.get(table_name).cloned(); //Lock released
+
             let bucket = self.bucket(id, kind, &shape);
+            let is_array = channel::is_array(&shape);
+            let is_scalar_i64 = !is_array && self.arguments.storage_layout == StorageLayout::Default && kind != ScalarType::string;
+
             match insert_statement{
                 None => {
                     log::warn!("Insert statement with name {} not found", &name);
-                    if self.is_scalar_i64_table(kind, &shape) {
+                    if is_scalar_i64 {
                         self.insert_asi64(&table_name, &name, kind, bucket, id, data).await?;
-                    } else if self.is_blob_table(kind, &shape) {
+                    } else if is_array {
                         self.insert_blob(&table_name, &name, kind, bucket, id, data).await?;
                     } else {
                         self.insert_typed(&table_name, &name, kind, bucket, id, data).await?;
                     }
                 }
                 Some(statement) => {
-                    if self.is_scalar_i64_table(kind, &shape) {
+                    if is_scalar_i64 {
                         self.execute_statement_i64(&statement, &name, kind, bucket, id, data).await?;
-                    } else if self.is_blob_table(kind, &shape) {
+                    } else if is_array {
                         self.execute_statement_blob(&statement, &name, kind, bucket, id, data).await?;
                     } else {
                         self.execute_statement_typed(&statement, &name, kind, bucket, id, data).await?;

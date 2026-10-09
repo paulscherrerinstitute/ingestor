@@ -19,6 +19,27 @@ pub fn kind_to_dtype(kind: ScalarType) -> i8 {
     }
 }
 
+pub fn dtype_to_kind(dtype:u8) -> ScalarType {
+    match dtype {
+        0 => {ScalarType::bool}
+        1 => {ScalarType::int8}
+        2 => {ScalarType::uint8}
+        3 => {ScalarType::int16}
+        4 => {ScalarType::uint16}
+        5 => {ScalarType::int32}
+        6 => {ScalarType::uint32}
+        7 => {ScalarType::int64}
+        8 => {ScalarType::uint64}
+        9 => {ScalarType::float32}
+        10 => {ScalarType::float64}
+        11 => {ScalarType::string}
+        _ => {
+            log::error!("Unknown dtype {}", dtype);
+            ScalarType::float64
+        }
+    }
+}
+
 pub fn kind_to_cql_type(kind:ScalarType) -> &'static str {
     match kind {
         ScalarType::string  => "text",
