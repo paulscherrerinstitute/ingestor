@@ -51,6 +51,10 @@ impl EngineClient {
         self.send_command(|response| EngineCommand::ResetStats { response }).await
     }
 
+    pub async fn reset_headers(&self) -> IOResult<()> {
+        self.send_command(|response| EngineCommand::ResetHeaders { response }).await
+    }
+
     pub async fn status(&self) ->  IOResult<Status> {
         self.send_command(|response| EngineCommand::Status { response }).await
     }

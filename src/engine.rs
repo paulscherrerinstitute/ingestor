@@ -41,6 +41,9 @@ pub enum EngineCommand {
     ResetStats {
         response: tokio::sync::oneshot::Sender<IOResult<()>>,
     },
+    ResetHeaders {
+        response: tokio::sync::oneshot::Sender<IOResult<()>>,
+    },
 }
 
 struct ProcessingStats {
@@ -130,6 +133,10 @@ impl Engine {
                         let _ = response.send(Ok(()));
                     }
 
+                    EngineCommand::ResetHeaders { response } => {
+                        engine.reset_headers();
+                        let _ = response.send(Ok(()));
+                    }
                 }
             }
         });
@@ -461,6 +468,12 @@ impl Engine {
         }
         self.processor.reset_stats();
     }
+
+    pub fn reset_headers(&mut self) {
+        for mut pool in self.pools.iter_mut() {
+            pool.reset_headers();
+        }
+    }    
 
     pub fn messages(&self) -> u32 {
         self.pools

@@ -86,7 +86,7 @@ impl Ingestor {
 
 
     pub async fn init(&self) -> IOResult<()> {
-        let session =  self.db.session().expect("Database session not initialized");
+        self.db.session().expect("Database session not initialized");
         if self.arguments.storage_layout == StorageLayout::Typed {
             self.db.create_data_table(TABLE_WAVEFORMS, "blob", true).await?;
             self.insert_statements.write().await.insert(TABLE_WAVEFORMS.to_string(), self.db.create_data_insert_statement(TABLE_WAVEFORMS, true).await?);

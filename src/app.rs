@@ -14,6 +14,7 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use scylla::response::query_result::QueryResult;
 use sysinfo::{Pid, ProcessesToUpdate, System};
@@ -162,33 +163,44 @@ impl App {
         self.state = state;
     }
 
+    async fn set_db_enabled(&mut self, enabled:bool) -> IOResult<()> {
+        if enabled != self.db.is_enabled() {
+            self.db.set_enabled(enabled);
+            if (enabled){
+                //Initialize BSREAD header info, so will receive header changed events on first message
+                log::info!("Enabling database access and resetting BSREAD headers");
+                self.reset_headers().await?;
+            } else {
+                log::info!("Disabling database access");
+            }
+        }
+        Ok(())
+    }
+
+
     pub async fn pause(&mut self) -> IOResult<()> {
         if self.state == State::Stopped{
-            self.init().await;
+            self.init(false).await;
         } else {
             self.assertState(State::Started)?;
         }
-        self.db.set_enabled(false);
+        self.set_db_enabled(false).await?;
         self.set_state(State::Paused);
-        Ok(())
-    }
-    pub fn set_db_enabled(&mut self, enabled:bool) -> IOResult<()> {
-        self.db.set_enabled(enabled);
         Ok(())
     }
 
     pub async fn start(&mut self) -> IOResult<()> {
         if self.state != State::Started {
             if !self.is_started() {
-                self.init().await;
+                self.init(true).await;
             }
-            self.db.set_enabled(true);
-            self.set_state(State::Started);
         }
+        self.set_db_enabled(true).await;
+        self.set_state(State::Started);
         Ok(())
     }
 
-    async fn init(&mut self) -> IOResult<()> {
+    async fn init(&mut self, database_enabled:bool) -> IOResult<()> {
         log::info!("Starting service");
         self.set_state(State::Starting);
 
@@ -202,6 +214,10 @@ impl App {
             log::error!("Error initializing ingestor: {:?}", e);
             self.set_state(State::Error);
         })?;
+
+        if database_enabled {
+            self.set_db_enabled(true).await;
+        }
 
         self.engine_client.send_config(self.config.clone()).await.inspect_err(|e| {
             log::error!("Error sending config in application startup: {:?}", e);
@@ -261,6 +277,10 @@ impl App {
 
     pub async fn reset_stats(&self,) -> IOResult<()> {
         self.engine_client.reset_stats().await
+    }
+
+    pub async fn reset_headers(&self,) -> IOResult<()> {
+        self.engine_client.reset_headers().await
     }
 
     pub async fn log_level(&self) ->  IOResult<String>  { Ok(log::max_level().to_string()) }
