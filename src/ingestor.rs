@@ -5,10 +5,12 @@ use crate::DB;
 use crate::cql;
 use crate::codec::*;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use bsread::{channel, IOError, IOResult, ScalarType, SocketType};
 use log::error;
 use scylla::statement::prepared::PreparedStatement;
 use tokio::sync::RwLock;
+use futures::future::join_all;
 use crate::arguments::StorageLayout;
 use crate::config::SocketKind;
 
@@ -104,20 +106,31 @@ impl Ingestor {
         self.db.create_channel_metadata_table(TABLE_CHANNEL_METADATA).await?;
         self.insert_statements.write().await.insert(TABLE_CHANNEL_METADATA.to_string(), self.db.create_channel_metadata_insert_statement(TABLE_CHANNEL_METADATA).await?);
 
+        //TODO: can I retrieve the latest metadata for each channel with a single CQL call?
         let channels = self.db.fetch_channels(TABLE_CHANNEL_METADATA).await;
         match channels {
             Ok(channels) => {
-                for channel in channels {
-                    let metadata = self.db.fetch_channel_metadata(TABLE_CHANNEL_METADATA, &channel).await;
-                    match metadata {
-                        Ok(metadata) => {
-                            self.channel_metadata.write().await.insert(channel, ChannelMetadata::from(metadata));
-                        }
-                        Err(e) => {
-                            log::error!("Error fetching channel {} metadata: {}", channel, e);
+                let db = &self.db;
+                let queries = channels.into_iter().map(|channel| async move {
+                    let metadata = db.fetch_channel_metadata(TABLE_CHANNEL_METADATA, &channel).await;
+                    (channel, metadata)
+                });
+                let results = join_all(queries).await;
+
+                {
+                    let mut channel_metadata = self.channel_metadata.write().await;
+                    for (channel, metadata) in results {
+                        match metadata {
+                            Ok(metadata) => {
+                                channel_metadata.insert(channel, ChannelMetadata::from(metadata));
+                            }
+                            Err(e) => {
+                                log::error!("Error fetching channel {} metadata: {}",channel,e);
+                            }
                         }
                     }
                 }
+
                 let channel_metadata = self.channel_metadata.read().await;
                 for (channel,metadata) in  channel_metadata.iter() {
                     log::info!("Channel {} metadata initialized: kind={:?} count={}", &channel, metadata.kind,  metadata.count);
