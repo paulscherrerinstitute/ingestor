@@ -143,9 +143,9 @@ impl Ingestor {
         Ok(())
     }
 
-    pub async fn on_header_change(&self, name:String, kind:ScalarType, shape:Option<Vec<u32>>, elements:usize, size:usize, id: u64, tm: (u64, u64)) -> IOResult<()> {
+    pub async fn on_header_change(&self, name:&str, kind:ScalarType, shape:&Option<Vec<u32>>, elements:usize, size:usize, id: u64, tm: (u64, u64)) -> IOResult<()> {
         if self.db.enabled_session().is_some() {
-            let metadata = self.channel_metadata.read().await.get(&name).cloned(); //Lock released
+            let metadata = self.channel_metadata.read().await.get(name).cloned(); //Lock released
             let changed = match metadata {
                 None => { true }
                 Some(metadata) => {
@@ -153,12 +153,12 @@ impl Ingestor {
                 }
             };
             if changed {
-                log::info!("Channel {} metadata changed: kind={:?} count={}", &name, kind,  elements);
-                self.channel_metadata.write().await.insert(name.clone(), ChannelMetadata { from: id, kind: kind, count: elements });
+                log::info!("Channel {} metadata changed: kind={:?} count={}", name, kind,  elements);
+                self.channel_metadata.write().await.insert(name.to_string(), ChannelMetadata { from: id, kind: kind, count: elements });
                 let insert_statement = self.insert_statements.read().await.get(TABLE_CHANNEL_METADATA).cloned();
                 if let Some(statement) = insert_statement {
-                    if let Err(e) = self.execute_statement_channel_metadata(&statement, &name, kind, elements, id as i64).await {
-                        log::error!("Error adding metadata for channel {}: {}", &name, e);
+                    if let Err(e) = self.execute_statement_channel_metadata(&statement, name, kind, elements, id as i64).await {
+                        log::error!("Error adding metadata for channel {}: {}", name, e);
                     }
                 } else {
                     log::error!("Insert statement for channel metadata table not found");
@@ -168,9 +168,9 @@ impl Ingestor {
         Ok(())
     }
 
-pub async fn append_record(&self, name:String,  kind:ScalarType, shape:Option<Vec<u32>>, elements:usize, id: u64, tm: (u64, u64), data:Option<Vec<u8>>) -> IOResult<()> {
+pub async fn append_record(&self, name:&str,  kind:ScalarType, shape:&Option<Vec<u32>>, elements:usize, id: u64, tm: (u64, u64), data:Option<Vec<u8>>) -> IOResult<()> {
         if self.db.enabled_session().is_some() {
-            let table_name = get_table_name(&self.arguments.storage_layout, &name, kind, &shape);
+            let table_name = get_table_name(&self.arguments.storage_layout, name, kind, &shape);
             let id = id as i64;
             if id <= 0 {
                 return Err(IOError::other( format!("Invalid id for {}: {}", name, id)));
@@ -180,28 +180,28 @@ pub async fn append_record(&self, name:String,  kind:ScalarType, shape:Option<Ve
             //let timestamp_nsec = tm.1 as i64;
             let insert_statement = self.insert_statements.read().await.get(table_name).cloned(); //Lock released
 
-            let bucket = self.bucket(id, kind, &shape);
-            let is_array = channel::is_array(&shape);
+            let bucket = self.bucket(id, kind, shape);
+            let is_array = channel::is_array(shape);
             let is_scalar_i64 = !is_array && self.arguments.storage_layout == StorageLayout::Default && kind != ScalarType::string;
 
             match insert_statement{
                 None => {
-                    log::warn!("Insert statement with name {} not found", &name);
+                    log::warn!("Insert statement with name {} not found", name);
                     if is_scalar_i64 {
-                        self.insert_asi64(&table_name, &name, kind, bucket, id, data).await?;
+                        self.insert_asi64(&table_name, name, kind, bucket, id, data).await?;
                     } else if is_array {
-                        self.insert_blob(&table_name, &name, kind, bucket, id, data).await?;
+                        self.insert_blob(&table_name, name, kind, bucket, id, data).await?;
                     } else {
-                        self.insert_typed(&table_name, &name, kind, bucket, id, data).await?;
+                        self.insert_typed(&table_name, name, kind, bucket, id, data).await?;
                     }
                 }
                 Some(statement) => {
                     if is_scalar_i64 {
-                        self.execute_statement_i64(&statement, &name, kind, bucket, id, data).await?;
+                        self.execute_statement_i64(&statement, name, kind, bucket, id, data).await?;
                     } else if is_array {
-                        self.execute_statement_blob(&statement, &name, kind, bucket, id, data).await?;
+                        self.execute_statement_blob(&statement, name, kind, bucket, id, data).await?;
                     } else {
-                        self.execute_statement_typed(&statement, &name, kind, bucket, id, data).await?;
+                        self.execute_statement_typed(&statement, name, kind, bucket, id, data).await?;
                     }
                 }
             }

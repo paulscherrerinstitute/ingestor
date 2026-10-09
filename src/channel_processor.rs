@@ -1,5 +1,6 @@
+use std::collections::{HashMap, HashSet};
 use crate::Arguments;
-use crate::ingestor::Ingestor;
+use crate::ingestor::{ChannelMetadata, Ingestor};
 use bsread::{ChannelConfig, ScalarType};
 use chrono::Local;
 use log::LevelFilter;
@@ -7,17 +8,23 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
+
+pub enum ChannelStatus{
+    Ok,
+    Error,
+}
 
 pub struct ChannelProcessor {
     arguments: Arc<Arguments>,
     ingestor: Arc<Ingestor>,
+    channels_in_error: RwLock<HashSet<String>>,
 }
 
 
 impl ChannelProcessor {
     pub fn new(arguments: Arc<Arguments>, ingestor: Arc<Ingestor>) -> Self {
-        Self {arguments, ingestor}
+        Self {arguments, ingestor,  channels_in_error:RwLock::new(HashSet::new())}
     }
 
     pub async fn process(&self, id: u64, tm: (u64, u64), config: ChannelConfig, data: Option<Vec<u8>>, header_changed: bool) {
@@ -32,13 +39,24 @@ impl ChannelProcessor {
         }
 
         if header_changed {
-            if let Err(e) = self.ingestor.on_header_change(config.name(), config.kind(), config.shape(), config.elements(), config.size(), id, tm).await{
+            if let Err(e) = self.ingestor.on_header_change(&config.name(), config.kind(), &config.shape(), config.elements(), config.size(), id, tm).await{
                 log::error!("Error on header change of {} {} {:?} {} {}: {}", config.name(), config.kind(), config.shape(), config.elements(), config.size(), e);
             }
         }
+
+
         let (name, kind, shape, elements) = config.into_parts();
-        if let Err(e) = self.ingestor.append_record(name,kind, shape, elements, id, tm, data).await{
-            log::error!("Error appending record for id {}: {}", id, e);
+
+        if let Err(e) = self.ingestor.append_record(&name,kind, &shape, elements, id, tm, data).await{
+            if  !self.channels_in_error.read().unwrap().contains(&name) {
+                log::error!("Error appending record id {} for channel {}: {}",id, name, e);
+                self.channels_in_error.write().unwrap().insert(name.clone());
+            };
+        } else {
+            if  self.channels_in_error.read().unwrap().contains(&name) {
+                log::info!("Channel {} recovered: record {} appended successfully", &name,  id);
+                self.channels_in_error.write().unwrap().remove(&name);
+            }
         }
     }
 
