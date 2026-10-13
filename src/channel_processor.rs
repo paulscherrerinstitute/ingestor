@@ -1,30 +1,30 @@
 use std::collections::{HashMap, HashSet};
 use crate::Arguments;
-use crate::ingestor::{ChannelMetadata, Ingestor};
+use crate::ingestor::{Ingestor};
 use bsread::{ChannelConfig, ScalarType};
 use chrono::Local;
 use log::LevelFilter;
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io::{self, Write, ErrorKind};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, atomic::{AtomicU64, Ordering}};
 
-pub enum ChannelStatus{
-    Ok,
-    Error,
+struct ChannelError {
+    kind: ErrorKind,
+    suppressed: AtomicU64,
 }
 
 pub struct ChannelProcessor {
     arguments: Arc<Arguments>,
     ingestor: Arc<Ingestor>,
-    channels_in_error: RwLock<HashSet<String>>,
+    channel_errors: RwLock<HashMap<String, ChannelError>>,
 }
 
 
 impl ChannelProcessor {
     pub fn new(arguments: Arc<Arguments>, ingestor: Arc<Ingestor>) -> Self {
-        Self {arguments, ingestor,  channels_in_error:RwLock::new(HashSet::new())}
+        Self {arguments, ingestor,  channel_errors:RwLock::new(HashMap::new())}
     }
 
     pub async fn process(&self, id: u64, tm: (u64, u64), config: ChannelConfig, data: Option<Vec<u8>>, header_changed: bool) {
@@ -48,14 +48,15 @@ impl ChannelProcessor {
         let (name, kind, shape, elements) = config.into_parts();
 
         if let Err(e) = self.ingestor.append_record(&name,kind, &shape, elements, id, tm, data).await{
-            if  !self.channels_in_error.read().unwrap().contains(&name) {
+            if self.channel_errors.read().unwrap().get(&name).map(|error| {error.suppressed.fetch_add(1, Ordering::Relaxed);}).is_none() {
+                self.channel_errors.write().unwrap().insert(name.clone(), ChannelError{ kind: e.kind(), suppressed: AtomicU64::new(0)});
                 log::error!("Error appending record id {} for channel {}: {}",id, name, e);
-                self.channels_in_error.write().unwrap().insert(name.clone());
-            };
+            }
         } else {
-            if  self.channels_in_error.read().unwrap().contains(&name) {
-                log::info!("Channel {} recovered: record {} appended successfully", &name,  id);
-                self.channels_in_error.write().unwrap().remove(&name);
+            if  self.channel_errors.read().unwrap().contains_key(&name) {
+                if let Some(error) = self.channel_errors.write().unwrap().remove(&name) {
+                    log::info!("Channel {} recovered on id {}: suppressed {} errors", &name,  id, error.suppressed.load(Ordering::Relaxed));
+                }
             }
         }
     }

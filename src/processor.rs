@@ -69,7 +69,7 @@ impl Processor {
 
     pub async fn process(&self, endpoint: Option<String>, message: Message){
         if let Err(err) = self.check_msg(&endpoint, &message){
-            log::error!("Message check failed: {}", err);
+            log::debug!("Message check failed: {}", err);
         } else {
             match self.arguments.channel_processing {
                 ChannelProcessing::Sync => {
@@ -125,7 +125,7 @@ impl Processor {
 
     pub fn process_direct(&self, endpoint: Option<String>, message: Message, handle:&tokio::runtime::Handle){
         if let Err(err) = self.check_msg(&endpoint, &message){
-            log::error!("Message check failed: {}", err);
+            log::debug!("Message check failed: {}", err);
         } else {
             let (id, tm, header_changed, channels, data) = message.into_parts();
 
@@ -171,7 +171,7 @@ impl Processor {
                     }
                 }
                 _ => {
-                    panic!(" Channel processing mode {:?} cannot have message processing mode direct." , self.arguments.channel_processing)
+                    panic!("Channel processing mode {:?} cannot have message processing mode direct." , self.arguments.channel_processing)
                  }
             }
         }
@@ -200,8 +200,8 @@ impl Processor {
             if source_info.last_id >= id {
                 return Err(IOError::other( format!("Received unordered message for {:?} last: {:?}, id: {}", endpoint, source_info.last_id, id)));
             } else if id != source_info.last_id + 1 {
-                //TODO: Remove
-                log::warn!("Missed ID from  {:?} last: {:?}, id: {}", endpoint, source_info.last_id, id);
+                //For testing if no message is missed
+                //log::warn!("Missed ID from  {:?} last: {:?}, id: {}", endpoint, source_info.last_id, id);
             }
         }
 
