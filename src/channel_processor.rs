@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use crate::Arguments;
 use crate::ingestor::{Ingestor};
-use bsread::{ChannelConfig, ScalarType};
+use bsread::{ChannelConfig, IOResult, ScalarType};
 use chrono::Local;
 use log::LevelFilter;
 use std::fs;
@@ -9,6 +9,7 @@ use std::fs::OpenOptions;
 use std::io::{self, Write, ErrorKind};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, atomic::{AtomicU64, Ordering}};
+use crate::app::State::Paused;
 
 struct ChannelError {
     kind: ErrorKind,
@@ -21,10 +22,11 @@ pub struct ChannelProcessor {
     channel_errors: RwLock<HashMap<String, ChannelError>>,
 }
 
+const METADATA_ERRORS_NAME: &str = "_metadata_";
 
 impl ChannelProcessor {
     pub fn new(arguments: Arc<Arguments>, ingestor: Arc<Ingestor>) -> Self {
-        Self {arguments, ingestor,  channel_errors:RwLock::new(HashMap::new())}
+        Self {arguments, ingestor, channel_errors:RwLock::new(HashMap::new())}
     }
 
     pub async fn process(&self, id: u64, tm: (u64, u64), config: ChannelConfig, data: Option<Vec<u8>>, header_changed: bool) {
@@ -39,23 +41,28 @@ impl ChannelProcessor {
         }
 
         if header_changed {
-            if let Err(e) = self.ingestor.on_header_change(&config.name(), config.kind(), &config.shape(), config.elements(), config.size(), id, tm).await{
-                log::error!("Error on header change of {} {} {:?} {} {}: {}", config.name(), config.kind(), config.shape(), config.elements(), config.size(), e);
-            }
+            let result = self.ingestor.on_header_change(&config.name(), config.kind(), &config.shape(), config.elements(), config.size(), id, tm).await;
+            self.check_append_result(id, METADATA_ERRORS_NAME, result);
         }
 
 
         let (name, kind, shape, elements) = config.into_parts();
 
-        if let Err(e) = self.ingestor.append_record(&name,kind, &shape, elements, id, tm, data).await{
-            if self.channel_errors.read().unwrap().get(&name).map(|error| {error.suppressed.fetch_add(1, Ordering::Relaxed);}).is_none() {
-                self.channel_errors.write().unwrap().insert(name.clone(), ChannelError{ kind: e.kind(), suppressed: AtomicU64::new(0)});
+        let result = self.ingestor.append_record(&name,kind, &shape, elements, id, tm, data).await;
+        self.check_append_result(id, &name, result);
+    }
+
+
+    fn check_append_result(&self, id: u64, name:&str, result:IOResult<()>){
+        if let Err(e) = result{
+            if self.channel_errors.read().unwrap().get(name).map(|error| {error.suppressed.fetch_add(1, Ordering::Relaxed);}).is_none() {
+                self.channel_errors.write().unwrap().insert(name.to_string(), ChannelError{ kind: e.kind(), suppressed: AtomicU64::new(0)});
                 log::error!("Error appending record id {} for channel {}: {}",id, name, e);
             }
         } else {
-            if  self.channel_errors.read().unwrap().contains_key(&name) {
-                if let Some(error) = self.channel_errors.write().unwrap().remove(&name) {
-                    log::info!("Channel {} recovered on id {}: suppressed {} errors", &name,  id, error.suppressed.load(Ordering::Relaxed));
+            if  self.channel_errors.read().unwrap().contains_key(name) {
+                if let Some(error) = self.channel_errors.write().unwrap().remove(name) {
+                    log::info!("Channel {} recovered on id {}: suppressed {} errors", name,  id, error.suppressed.load(Ordering::Relaxed));
                 }
             }
         }
