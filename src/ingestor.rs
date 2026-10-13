@@ -13,6 +13,7 @@ use tokio::sync::RwLock;
 use futures::future::join_all;
 use crate::arguments::StorageLayout;
 use crate::config::SocketKind;
+use crate::engine::EngineCommand;
 
 pub const TABLE_SCALARS:&str = "measurements";
 pub const TABLE_WAVEFORMS:&str = "waveforms";
@@ -86,6 +87,7 @@ impl Ingestor {
 
 
     pub async fn init(&self) -> IOResult<()> {
+        log::info!("Initializing ingestor...");
         self.db.session().expect("Database session not initialized");
         if self.arguments.storage_layout == StorageLayout::Typed {
             self.db.create_data_table(TABLE_WAVEFORMS, "blob", true).await?;
@@ -105,7 +107,8 @@ impl Ingestor {
         }
         self.db.create_channel_metadata_table(TABLE_CHANNEL_METADATA).await?;
         self.insert_statements.write().await.insert(TABLE_CHANNEL_METADATA.to_string(), self.db.create_channel_metadata_insert_statement(TABLE_CHANNEL_METADATA).await?);
-
+        self.channel_metadata.write().await.clear();
+        
         if self.arguments.log_metadata_on_change {
             //TODO: can I retrieve the latest metadata for each channel with a single CQL call?
             let channels = self.db.fetch_channels(TABLE_CHANNEL_METADATA).await;
@@ -145,6 +148,20 @@ impl Ingestor {
         Ok(())
     }
 
+    pub async fn on_timer(&self) -> IOResult<()> {
+        Ok(())
+    }
+
+    pub async fn on_day_change(&self) -> IOResult<()> {
+        if !self.arguments.log_metadata_on_change {
+            log::info!("On-day change event: updating the channel metadata entries");
+            //Make sure metadata table is updated every day
+            self.channel_metadata.write().await.clear();
+        }
+        Ok(())
+    }
+
+    
     pub async fn on_header_change(&self, name:&str, kind:ScalarType, shape:&Option<Vec<u32>>, elements:usize, size:usize, id: u64, tm: (u64, u64)) -> IOResult<()> {
         if self.db.enabled_session().is_some() {
             let metadata = self.channel_metadata.read().await.get(name).cloned(); //Lock released
