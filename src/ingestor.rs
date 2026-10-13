@@ -106,38 +106,40 @@ impl Ingestor {
         self.db.create_channel_metadata_table(TABLE_CHANNEL_METADATA).await?;
         self.insert_statements.write().await.insert(TABLE_CHANNEL_METADATA.to_string(), self.db.create_channel_metadata_insert_statement(TABLE_CHANNEL_METADATA).await?);
 
-        //TODO: can I retrieve the latest metadata for each channel with a single CQL call?
-        let channels = self.db.fetch_channels(TABLE_CHANNEL_METADATA).await;
-        match channels {
-            Ok(channels) => {
-                let db = &self.db;
-                let queries = channels.into_iter().map(|channel| async move {
-                    let metadata = db.fetch_channel_metadata(TABLE_CHANNEL_METADATA, &channel).await;
-                    (channel, metadata)
-                });
-                let results = join_all(queries).await;
+        if self.arguments.log_metadata_on_change {
+            //TODO: can I retrieve the latest metadata for each channel with a single CQL call?
+            let channels = self.db.fetch_channels(TABLE_CHANNEL_METADATA).await;
+            match channels {
+                Ok(channels) => {
+                    let db = &self.db;
+                    let queries = channels.into_iter().map(|channel| async move {
+                        let metadata = db.fetch_channel_metadata(TABLE_CHANNEL_METADATA, &channel).await;
+                        (channel, metadata)
+                    });
+                    let results = join_all(queries).await;
 
-                {
-                    let mut channel_metadata = self.channel_metadata.write().await;
-                    for (channel, metadata) in results {
-                        match metadata {
-                            Ok(metadata) => {
-                                channel_metadata.insert(channel, ChannelMetadata::from(metadata));
-                            }
-                            Err(e) => {
-                                log::error!("Error fetching channel {} metadata: {}",channel,e);
+                    {
+                        let mut channel_metadata = self.channel_metadata.write().await;
+                        for (channel, metadata) in results {
+                            match metadata {
+                                Ok(metadata) => {
+                                    channel_metadata.insert(channel, ChannelMetadata::from(metadata));
+                                }
+                                Err(e) => {
+                                    log::error!("Error fetching channel {} metadata: {}",channel,e);
+                                }
                             }
                         }
                     }
-                }
 
-                let channel_metadata = self.channel_metadata.read().await;
-                for (channel,metadata) in  channel_metadata.iter() {
-                    log::info!("Channel {} metadata initialized: kind={:?} count={}", &channel, metadata.kind,  metadata.count);
+                    let channel_metadata = self.channel_metadata.read().await;
+                    for (channel, metadata) in channel_metadata.iter() {
+                        log::info!("Channel {} metadata initialized: kind={:?} count={}", &channel, metadata.kind,  metadata.count);
+                    }
                 }
-            }
-            Err(e) => {
-                log::error!("Error fetching channel names: {}", e);
+                Err(e) => {
+                    log::error!("Error fetching channel names: {}", e);
+                }
             }
         }
         Ok(())
@@ -146,22 +148,21 @@ impl Ingestor {
     pub async fn on_header_change(&self, name:&str, kind:ScalarType, shape:&Option<Vec<u32>>, elements:usize, size:usize, id: u64, tm: (u64, u64)) -> IOResult<()> {
         if self.db.enabled_session().is_some() {
             let metadata = self.channel_metadata.read().await.get(name).cloned(); //Lock released
-            let changed = match metadata {
+            let insert = match &metadata {
                 None => { true }
                 Some(metadata) => {
                     metadata.count != elements || metadata.kind != kind
                 }
             };
-            if changed {
-                log::info!("Channel {} metadata changed: kind={:?} count={}", name, kind,  elements);
+            if insert {
+                let reason = if metadata.is_some() {"changed"} else {"added"};
+                log::info!("Channel {} metadata {}: kind={:?} count={}", name, reason, kind, elements);
                 self.channel_metadata.write().await.insert(name.to_string(), ChannelMetadata { from: id, kind: kind, count: elements });
                 let insert_statement = self.insert_statements.read().await.get(TABLE_CHANNEL_METADATA).cloned();
                 if let Some(statement) = insert_statement {
-                    if let Err(e) = self.execute_statement_channel_metadata(&statement, name, kind, elements, id as i64).await {
-                        log::error!("Error adding metadata for channel {}: {}", name, e);
-                    }
+                    self.execute_statement_channel_metadata(&statement, name, kind, elements, id as i64).await?
                 } else {
-                    log::error!("Insert statement for channel metadata table not found");
+                    return Err(IOError::other("Insert statement for channel metadata table not found"));
                 }
             }
         }
@@ -173,7 +174,7 @@ pub async fn append_record(&self, name:&str,  kind:ScalarType, shape:&Option<Vec
             let table_name = get_table_name(&self.arguments.storage_layout, name, kind, &shape);
             let id = id as i64;
             if id <= 0 {
-                return Err(IOError::other( format!("Invalid id for {}: {}", name, id)));
+                return Err(IOError::other(format!("Invalid id for {}: {}", name, id)));
             }
             
             //let timestamp_sec = tm.0 as i64;

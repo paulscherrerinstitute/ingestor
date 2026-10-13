@@ -57,12 +57,20 @@ impl ChannelProcessor {
         if let Err(e) = result{
             if self.channel_errors.read().unwrap().get(name).map(|error| {error.suppressed.fetch_add(1, Ordering::Relaxed);}).is_none() {
                 self.channel_errors.write().unwrap().insert(name.to_string(), ChannelError{ kind: e.kind(), suppressed: AtomicU64::new(0)});
-                log::error!("Error appending record id {} for channel {}: {}",id, name, e);
+                if name == METADATA_ERRORS_NAME {
+                    log::error!("Error appending metadata for channel {} on id {}: {}", name, id, e);
+                } else {
+                    log::error!("Error appending record id {} for channel {}: {}",id, name, e);
+                }
             }
         } else {
             if  self.channel_errors.read().unwrap().contains_key(name) {
                 if let Some(error) = self.channel_errors.write().unwrap().remove(name) {
-                    log::info!("Channel {} recovered on id {}: suppressed {} errors", name,  id, error.suppressed.load(Ordering::Relaxed));
+                    if name == METADATA_ERRORS_NAME {
+                        log::info!("Metadata recovered on id {}: suppressed {} errors",  id, error.suppressed.load(Ordering::Relaxed));
+                    } else {
+                        log::info!("Channel {} recovered on id {}: suppressed {} errors", name,  id, error.suppressed.load(Ordering::Relaxed));
+                    }
                 }
             }
         }

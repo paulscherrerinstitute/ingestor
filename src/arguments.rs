@@ -74,7 +74,7 @@ pub struct Arguments {
     pub message_processing: MessageProcessing,
     pub channel_processing:ChannelProcessing,
     pub storage_layout:StorageLayout,
-    pub pause:bool,
+    pub log_metadata_on_change:bool,
     pub create:bool,
 }
 
@@ -98,7 +98,7 @@ impl Default for Arguments {
             message_processing: MessageProcessing::Ordered,
             channel_processing: ChannelProcessing::Joined,
             storage_layout: StorageLayout::Default,
-            pause: false,
+            log_metadata_on_change: false,
             create: false,
         }
     }
@@ -192,6 +192,9 @@ pub struct Cli {
     #[arg(long, help = "Data output path")]
     pub output_path: Option<PathBuf>,
 
+    #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "false", help = "Log channel metadata only when persisted value changes")]
+    pub log_metadata_on_change: Option<bool>,
+
     #[arg(long , action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Create databases if absent")]
     pub create: Option<bool>,
 
@@ -268,6 +271,10 @@ impl Cli {
 
         if let Some(value) = self.storage_layout {
             arguments.storage_layout = value;
+        }
+
+        if let Some(value) = self.log_metadata_on_change {
+            arguments.log_metadata_on_change = value;
         }
 
         if let Some(value) = self.create {
