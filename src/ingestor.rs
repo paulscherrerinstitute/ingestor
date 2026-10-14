@@ -1,17 +1,18 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
-use crate::Arguments;
+use crate::{engine, Arguments};
 use crate::DB;
 use crate::cql;
 use crate::codec::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use bsread::{channel, IOError, IOResult, ScalarType, SocketType};
+use bsread::{channel, IOError, IOResult, ScalarType, SocketType, EndpointDiag};
 use log::error;
 use scylla::statement::prepared::PreparedStatement;
-use tokio::sync::RwLock;
+use tokio::sync::{oneshot, RwLock};
 use futures::future::join_all;
+use tokio::sync::mpsc::channel;
 use crate::arguments::StorageLayout;
 use crate::config::SocketKind;
 use crate::engine::EngineCommand;
@@ -25,6 +26,7 @@ pub const TABLE_CHANNEL_METADATA:&str = "channel_metadata";
 pub const BUCKET_DIVISOR_SCALARS:i64 = 1_000_000;
 pub const BUCKET_DIVISOR_STRINGS:i64 = 100_000;
 pub const BUCKET_DIVISOR_WAVEFORMS:i64 = 10_000;
+
 
 pub fn get_table_name(layout:&StorageLayout, channel_name:&str, kind:ScalarType, shape:&Option<Vec<u32>>) -> &'static str {
     match layout {
@@ -49,15 +51,24 @@ pub fn get_table_name(layout:&StorageLayout, channel_name:&str, kind:ScalarType,
 
 #[derive( Debug, Clone)]
 pub struct ChannelMetadata {
+    name: Option<String>,
     from: u64,
     kind: ScalarType,
     count: usize,
 }
 
+pub enum MetadataCommand {
+    Init {
+        statement: PreparedStatement
+    },
+    Insert {
+        name:String, kind:ScalarType,  elements:usize, id: u64
+    },
+}
+
 impl From<crate::db::ChannelMetadata> for ChannelMetadata {
     fn from(metadata: crate::db::ChannelMetadata) -> Self {
-        Self{from: metadata.from_pulse_id as u64,kind: dtype_to_kind(metadata.dtype as u8),count: metadata.element_count as usize,
-        }
+        Self{name:None, from: metadata.from_pulse_id as u64,kind: dtype_to_kind(metadata.dtype as u8),count: metadata.element_count as usize}
     }
 }
 
@@ -67,14 +78,41 @@ pub struct Ingestor {
     insert_statements: RwLock<HashMap<String, PreparedStatement>>,
     channel_metadata: RwLock<HashMap<String, ChannelMetadata>>,
     metadata_errors: Arc<AtomicU64>,
+    failed_metadata_records: Arc<RwLock<Vec<ChannelMetadata>>>,
+    metadata_sender: tokio::sync::mpsc::Sender<MetadataCommand>,
 }
 
 
 impl Ingestor {
     pub fn new(arguments:Arc<Arguments>, db:Arc<DB>) -> Self {
-        Self { arguments, db, insert_statements: RwLock::new(HashMap::new()), channel_metadata:RwLock::new(HashMap::new()), metadata_errors: Arc::new(AtomicU64::new(0))}
-    }
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<MetadataCommand>(arguments.metadata_queue);
+        let insert_statements = RwLock::new(HashMap::new());
+        let channel_metadata =RwLock::new(HashMap::new());
+        let metadata_errors= Arc::new(AtomicU64::new(0));
+        let failed_metadata_records = Arc::new(RwLock::new(Vec::new()));
 
+        if !arguments.metadata_synchronous {
+            let _db = db.clone();
+            let _metadata_errors = metadata_errors.clone();
+            let _failed_metadata_records = failed_metadata_records.clone();
+            tokio::spawn(async move {
+                let mut insert_statement: Option<PreparedStatement> = None;
+                while let Some(msg) = rx.recv().await {
+                    match msg {
+                        MetadataCommand::Init { statement } => {
+                            insert_statement = Some(statement);
+                        }
+                        MetadataCommand::Insert { name, kind, elements, id } => {
+                            if let Some(statement) = &insert_statement {
+                                Self::append_metadata(&_db, &_metadata_errors, &_failed_metadata_records, statement, &name, kind, elements, id).await;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        Self { arguments, db, insert_statements, channel_metadata, metadata_errors, failed_metadata_records, metadata_sender:tx}
+    }
 
     fn bucket(&self, id:i64, kind:ScalarType, shape:&Option<Vec<u32>>) -> i64 {
         let divider = if channel::is_array(shape){
@@ -86,7 +124,6 @@ impl Ingestor {
         };
         id/divider
     }
-
 
     pub async fn init(&self) -> IOResult<()> {
         log::info!("Initializing ingestor...");
@@ -108,7 +145,10 @@ impl Ingestor {
             self.insert_statements.write().await.insert(TABLE_SCALARS.to_string(), self.db.create_data_insert_statement(TABLE_SCALARS, true).await?);
         }
         self.db.create_channel_metadata_table(TABLE_CHANNEL_METADATA).await?;
-        self.insert_statements.write().await.insert(TABLE_CHANNEL_METADATA.to_string(), self.db.create_channel_metadata_insert_statement(TABLE_CHANNEL_METADATA).await?);
+        let metadata_prepared_statement = self.db.create_channel_metadata_insert_statement(TABLE_CHANNEL_METADATA).await?;
+        self.metadata_sender.send(MetadataCommand::Init { statement: metadata_prepared_statement.clone()}).await.
+            map_err(|_| {IOError::new(ErrorKind::BrokenPipe,"Metadata command handler is not running")})?;
+        self.insert_statements.write().await.insert(TABLE_CHANNEL_METADATA.to_string(), metadata_prepared_statement);
         self.channel_metadata.write().await.clear();
 
         if self.arguments.metadata_on_changed {
@@ -151,6 +191,25 @@ impl Ingestor {
     }
 
     pub async fn on_timer(&self) -> IOResult<()> {
+        if !self.arguments.metadata_synchronous {
+            let  failed_metadata_records = self.failed_metadata_records.read().await.clone();
+            if !failed_metadata_records.is_empty() {
+                log::info!("Retrying sending channel metadata");
+                for record in failed_metadata_records{
+                    if let Some(name) = &record.name {
+                        match self.send_message_insert_metadata(&name, record.kind, record.count, record.from).await {
+                            Ok(_) => {
+                                log::info!("Retrying sending metadata: {:?}",record);
+                            }
+                            Err(e) => {
+                                continue
+                            }
+                        }
+                    }
+                    self.failed_metadata_records.write().await.retain(|rec| rec.name != record.name || rec.from != record.from);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -163,9 +222,13 @@ impl Ingestor {
         Ok(())
     }
 
+    pub fn enabled(&self) -> bool {
+        self.db.enabled_session().is_some()
+    }
+
 
     pub async fn on_header_change(&self, name:&str, kind:ScalarType, shape:&Option<Vec<u32>>, elements:usize, size:usize, id: u64, tm: (u64, u64)) -> IOResult<()> {
-        if self.db.enabled_session().is_some() {
+        if self.enabled() {
             let metadata = self.channel_metadata.read().await.get(name).cloned(); //Lock released
             let insert = match &metadata {
                 None => { true }
@@ -175,19 +238,14 @@ impl Ingestor {
             };
             if insert {
                 let reason = if metadata.is_some() {"changed"} else {"added"};
-                log::info!("Channel {} metadata {}: kind={:?} count={}", name, reason, kind, elements);
-                self.channel_metadata.write().await.insert(name.to_string(), ChannelMetadata { from: id, kind: kind, count: elements });
+                log::info!("Channel {} metadata {}: kind={:?} count={} from={}", name, reason, kind, elements, id);
+                self.channel_metadata.write().await.insert(name.to_string(), ChannelMetadata { name:None, from: id, kind: kind, count: elements });
                 let insert_statement = self.insert_statements.read().await.get(TABLE_CHANNEL_METADATA).cloned();
                 if let Some(statement) = insert_statement {
                     if self.arguments.metadata_synchronous {
-                        Self::append_metadata(&self.db, &self.metadata_errors, &statement, name, kind, elements, id).await;
+                        Self::append_metadata(&self.db, &self.metadata_errors, &self.failed_metadata_records, &statement, name, kind, elements, id).await;
                     } else {
-                        let metadata_errors = self.metadata_errors.clone();
-                        let db = self.db.clone();
-                        let name = name.to_string();
-                        tokio::spawn(async move {
-                            Self::append_metadata(&db, &metadata_errors, &statement, &name, kind, elements, id).await;
-                        });
+                        self.send_message_insert_metadata(name, kind, elements, id).await?;
                     }
                 } else {
                     return Err(IOError::other("Insert statement for channel metadata table not found"));
@@ -197,13 +255,35 @@ impl Ingestor {
         Ok(())
     }
 
-    async fn append_metadata(db:&DB, metadata_errors:&Arc<AtomicU64>, statement: &PreparedStatement, name:&str, kind:ScalarType,  elements:usize, id: u64) {
-        let result = db.execute_statement_channel_metadata(&statement, name, kind, elements, id as i64).await;
-        Self::check_append_metadata_result(id, name, result, metadata_errors);
+    async fn send_message_insert_metadata(&self, name:&str, kind:ScalarType, elements:usize, id : u64)  -> IOResult<()> {
+        match self.metadata_sender.try_send(MetadataCommand::Insert {name:name.to_string(), kind, elements, id}) {
+            Ok(()) => {
+                Ok(())
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
+                Err(IOError::new(ErrorKind::WouldBlock,format!("Dropping  metadata insert command - {} {} {} {} - : endpoint queue is full", name, kind, elements, id)))
+            }
+            Err(err) => {
+                Err(IOError::new(ErrorKind::BrokenPipe,"Metadata handler is not running",))
+            }
+        }
     }
 
 
-    fn check_append_metadata_result(id: u64, name: &str, result: IOResult<()>, metadata_errors:&Arc<AtomicU64>) {
+    async fn append_metadata(db:&DB, metadata_errors:&Arc<AtomicU64>,  failed_metadata_records: &RwLock<Vec<ChannelMetadata>>,
+                             statement: &PreparedStatement, name:&str, kind:ScalarType,  elements:usize, id: u64) -> bool{
+        let result = db.execute_statement_channel_metadata(&statement, name, kind, elements, id as i64).await;
+        Self::check_append_metadata_result(id, name, &result, metadata_errors);
+        if let Err(e) = result {
+            failed_metadata_records.write().await.push(ChannelMetadata{name: Some(name.to_string()),from: id, kind, count: elements});
+            false
+        } else {
+            true
+        }
+    }
+
+
+    fn check_append_metadata_result(id: u64, name: &str, result: &IOResult<()>, metadata_errors:&Arc<AtomicU64>) {
         match result {
             Err(e) => {
                 let previous = metadata_errors.fetch_add(1, Ordering::Relaxed);
@@ -221,7 +301,7 @@ impl Ingestor {
     }
 
     pub async fn append_record(&self, name:&str,  kind:ScalarType, shape:&Option<Vec<u32>>, elements:usize, id: u64, tm: (u64, u64), data:Option<Vec<u8>>) -> IOResult<()> {
-        if self.db.enabled_session().is_some() {
+        if self.enabled() {
             let table_name = get_table_name(&self.arguments.storage_layout, name, kind, &shape);
             let id = id as i64;
             if id <= 0 {

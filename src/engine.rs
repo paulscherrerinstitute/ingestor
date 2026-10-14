@@ -566,6 +566,6 @@ impl Engine {
 }
 impl Drop for Engine {
     fn drop(&mut self) {
-        self.stop();
+        let _ = self.stop();
     }
 }

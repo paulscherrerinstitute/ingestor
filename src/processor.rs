@@ -249,7 +249,7 @@ impl Processor {
     }
 
     pub async fn on_endpoint_diag(&self, endpoint: String, diag: EndpointDiag, id: Option<u64>) {
-        log::info!("Endpoint {} id {:?} diag: {:?}", endpoint, id, diag);
+        log::debug!("Endpoint {} id {:?} diag: {:?}", endpoint, id, diag);
     }
 
 

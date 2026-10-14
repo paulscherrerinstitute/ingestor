@@ -59,8 +59,10 @@ impl ChannelProcessor {
             }
         } else {
             if  self.channel_errors.read().unwrap().contains_key(name) {
-                if let Some(error) = self.channel_errors.write().unwrap().remove(name) {
-                log::info!("Channel {} recovered on id {}: suppressed {} errors", name,  id, error.suppressed.load(Ordering::Relaxed)); }
+                if self.ingestor.enabled() {
+                    if let Some(error) = self.channel_errors.write().unwrap().remove(name) {
+                    log::info!("Channel {} recovered on id {}: suppressed {} errors", name,  id, error.suppressed.load(Ordering::Relaxed)); }
+                }
             }
         }
     }

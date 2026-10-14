@@ -76,6 +76,7 @@ pub struct Arguments {
     pub storage_layout:StorageLayout,
     pub metadata_on_changed:bool,
     pub metadata_synchronous:bool,
+    pub metadata_queue: usize,
     pub create:bool,
 }
 
@@ -101,6 +102,7 @@ impl Default for Arguments {
             storage_layout: StorageLayout::Default,
             metadata_on_changed: false,
             metadata_synchronous: false,
+            metadata_queue: 10000,
             create: false,
         }
     }
@@ -197,8 +199,11 @@ pub struct Cli {
     #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "false", help = "Insert channel metadata only when persisted value changes")]
     pub metadata_on_changed: Option<bool>,
 
-    #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "false", help = "Insert channel metadata sequentially before the data")]
+    #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "false", help = "Synchromnous insertion channel metadata sequentially before the data")]
     pub metadata_synchronous: Option<bool>,
+
+    #[arg(long, help = "Metadata queue size, if metadata writing is not synchronous")]
+    pub metadata_queue: Option<usize>,
 
     #[arg(long , action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Create databases if absent")]
     pub create: Option<bool>,
@@ -286,6 +291,10 @@ impl Cli {
             arguments.metadata_synchronous = value;
         }
 
+        if let Some(value) = self.metadata_queue {
+            arguments.metadata_queue = value;
+        }
+        
         if let Some(value) = self.create {
             arguments.create = value;
         }
