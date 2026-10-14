@@ -104,10 +104,10 @@ impl Default for Arguments {
             receive_hwm: 1000,
             disable_handshake: false,
             blocking_config: true,
-            message_processing: MessageProcessing::Ordered,
-            channel_processing: ChannelProcessing::Joined,
+            message_processing: MessageProcessing::Direct , //Ordered,
+            channel_processing: ChannelProcessing::Buffered, //Joined,
             storage_layout: StorageLayout::Default,
-            metadata_processing: MetadataProcessing::Async,
+            metadata_processing: MetadataProcessing::Queued,
             metadata_on_changed: false,
             metadata_queue: 10000,
             create: false,
@@ -191,19 +191,19 @@ pub struct Cli {
     #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Configuration commands are blocking")]
     pub blocking_config: Option<bool>,
 
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "How receivers send messages for processing (default: direct call)")]
     pub  message_processing: Option<MessageProcessing>,
 
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "How channel values are propagated for writing (default: buffered)")]
     pub channel_processing: Option<ChannelProcessing>,
 
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Database layout - Default stores all scalars as bigint")]
     pub storage_layout: Option<StorageLayout>,
 
     #[arg(long, help = "Data output path")]
     pub output_path: Option<PathBuf>,
 
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help = "Channel metadata writing mode (default: Queued)")]
     pub metadata_processing: Option<MetadataProcessing>,
 
     #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "false", help = "Insert channel metadata only when persisted value changes")]
