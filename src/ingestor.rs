@@ -1,21 +1,17 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
-use crate::{engine, Arguments};
+use crate::Arguments;
 use crate::DB;
 use crate::cql;
 use crate::codec::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-use bsread::{channel, IOError, IOResult, ScalarType, SocketType, EndpointDiag};
-use log::error;
+use bsread::{channel, IOError, IOResult, ScalarType};
 use scylla::statement::prepared::PreparedStatement;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{ RwLock};
 use futures::future::join_all;
 use tokio::sync::mpsc::channel;
-use crate::arguments::StorageLayout;
-use crate::config::SocketKind;
-use crate::engine::EngineCommand;
+use crate::arguments::{MetadataProcessing, StorageLayout};
 
 pub const TABLE_SCALARS:&str = "measurements";
 pub const TABLE_WAVEFORMS:&str = "waveforms";
@@ -85,13 +81,13 @@ pub struct Ingestor {
 
 impl Ingestor {
     pub fn new(arguments:Arc<Arguments>, db:Arc<DB>) -> Self {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<MetadataCommand>(arguments.metadata_queue);
+        let (tx, mut rx) = channel::<MetadataCommand>(arguments.metadata_queue);
         let insert_statements = RwLock::new(HashMap::new());
         let channel_metadata =RwLock::new(HashMap::new());
         let metadata_errors= Arc::new(AtomicU64::new(0));
         let failed_metadata_records = Arc::new(RwLock::new(Vec::new()));
 
-        if !arguments.metadata_synchronous {
+        if arguments.metadata_processing == MetadataProcessing::Queued {
             let _db = db.clone();
             let _metadata_errors = metadata_errors.clone();
             let _failed_metadata_records = failed_metadata_records.clone();
@@ -146,8 +142,10 @@ impl Ingestor {
         }
         self.db.create_channel_metadata_table(TABLE_CHANNEL_METADATA).await?;
         let metadata_prepared_statement = self.db.create_channel_metadata_insert_statement(TABLE_CHANNEL_METADATA).await?;
-        self.metadata_sender.send(MetadataCommand::Init { statement: metadata_prepared_statement.clone()}).await.
-            map_err(|_| {IOError::new(ErrorKind::BrokenPipe,"Metadata command handler is not running")})?;
+        if self.arguments.metadata_processing == MetadataProcessing::Queued {
+            self.metadata_sender.send(MetadataCommand::Init { statement: metadata_prepared_statement.clone() }).await.
+                map_err(|_| { IOError::new(ErrorKind::BrokenPipe, "Metadata command handler is not running") })?;
+        }
         self.insert_statements.write().await.insert(TABLE_CHANNEL_METADATA.to_string(), metadata_prepared_statement);
         self.channel_metadata.write().await.clear();
 
@@ -191,18 +189,23 @@ impl Ingestor {
     }
 
     pub async fn on_timer(&self) -> IOResult<()> {
-        if !self.arguments.metadata_synchronous {
+        if self.arguments.metadata_processing != MetadataProcessing::Sync {
             let  failed_metadata_records = self.failed_metadata_records.read().await.clone();
             if !failed_metadata_records.is_empty() {
                 log::info!("Retrying sending channel metadata");
                 for record in failed_metadata_records{
                     if let Some(name) = &record.name {
-                        match self.send_message_insert_metadata(&name, record.kind, record.count, record.from).await {
+                        match self.insert_metadata(&name, record.kind, record.count, record.from).await {
                             Ok(_) => {
                                 log::info!("Retrying sending metadata: {:?}",record);
                             }
                             Err(e) => {
-                                continue
+                                log::info!("Error resending metadata: {:?}",record);
+                                if (self.arguments.metadata_processing == MetadataProcessing::Queued){
+                                    continue
+                                } else {
+                                    break //Don't retry if cannot spawn a Tokio task
+                                }
                             }
                         }
                     }
@@ -240,22 +243,33 @@ impl Ingestor {
                 let reason = if metadata.is_some() {"changed"} else {"added"};
                 log::info!("Channel {} metadata {}: kind={:?} count={} from={}", name, reason, kind, elements, id);
                 self.channel_metadata.write().await.insert(name.to_string(), ChannelMetadata { name:None, from: id, kind: kind, count: elements });
-                let insert_statement = self.insert_statements.read().await.get(TABLE_CHANNEL_METADATA).cloned();
-                if let Some(statement) = insert_statement {
-                    if self.arguments.metadata_synchronous {
-                        Self::append_metadata(&self.db, &self.metadata_errors, &self.failed_metadata_records, &statement, name, kind, elements, id).await;
-                    } else {
-                        self.send_message_insert_metadata(name, kind, elements, id).await?;
-                    }
-                } else {
-                    return Err(IOError::other("Insert statement for channel metadata table not found"));
-                }
+                self.insert_metadata(name, kind, elements, id).await?
             }
         }
         Ok(())
     }
 
-    async fn send_message_insert_metadata(&self, name:&str, kind:ScalarType, elements:usize, id : u64)  -> IOResult<()> {
+    async fn insert_metadata(&self, name:&str, kind:ScalarType, elements:usize, id : u64) -> IOResult<()> {
+        let insert_statement = self.insert_statements.read().await.get(TABLE_CHANNEL_METADATA).cloned();
+        if let Some(statement) = insert_statement {
+            match self.arguments.metadata_processing {
+                MetadataProcessing::Sync => {
+                    Self::append_metadata(&self.db, &self.metadata_errors, &self.failed_metadata_records, &statement, name, kind, elements, id).await;
+                }
+                MetadataProcessing::Async => {
+                    self.insert_metadata_async(statement, name, kind, elements, id).await?;
+                }
+                MetadataProcessing::Queued => {
+                    self.insert_metadata_queue(name, kind, elements, id).await?;
+                }
+            }
+            Ok(())
+        } else {
+            Err(IOError::other("Insert statement for channel metadata table not found"))
+        }
+    }
+
+    async fn insert_metadata_queue(&self, name:&str, kind:ScalarType, elements:usize, id : u64) -> IOResult<()> {
         match self.metadata_sender.try_send(MetadataCommand::Insert {name:name.to_string(), kind, elements, id}) {
             Ok(()) => {
                 Ok(())
@@ -267,6 +281,17 @@ impl Ingestor {
                 Err(IOError::new(ErrorKind::BrokenPipe,"Metadata handler is not running",))
             }
         }
+    }
+
+    async fn insert_metadata_async(&self, statement:PreparedStatement, name:&str, kind:ScalarType, elements:usize, id : u64) -> IOResult<()> {
+        let db = self.db.clone();
+        let metadata_errors = self.metadata_errors.clone();
+        let failed_metadata_records = self.failed_metadata_records.clone();
+        let name = name.to_string();
+        tokio::spawn(async move {
+            Self::append_metadata(&db, &metadata_errors, &failed_metadata_records, &statement, &name, kind, elements, id).await;
+        });
+        Ok(())
     }
 
 

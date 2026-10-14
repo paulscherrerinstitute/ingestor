@@ -39,6 +39,13 @@ pub enum ChannelProcessing {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ValueEnum, PartialEq)]
+pub enum MetadataProcessing {
+    Sync,
+    Async,
+    Queued
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ValueEnum, PartialEq)]
 pub enum StorageLayout {
     Default,
     Typed,
@@ -74,8 +81,8 @@ pub struct Arguments {
     pub message_processing: MessageProcessing,
     pub channel_processing:ChannelProcessing,
     pub storage_layout:StorageLayout,
+    pub metadata_processing:MetadataProcessing,
     pub metadata_on_changed:bool,
-    pub metadata_synchronous:bool,
     pub metadata_queue: usize,
     pub create:bool,
 }
@@ -100,8 +107,8 @@ impl Default for Arguments {
             message_processing: MessageProcessing::Ordered,
             channel_processing: ChannelProcessing::Joined,
             storage_layout: StorageLayout::Default,
+            metadata_processing: MetadataProcessing::Async,
             metadata_on_changed: false,
-            metadata_synchronous: false,
             metadata_queue: 10000,
             create: false,
         }
@@ -196,11 +203,11 @@ pub struct Cli {
     #[arg(long, help = "Data output path")]
     pub output_path: Option<PathBuf>,
 
+    #[arg(long, value_enum)]
+    pub metadata_processing: Option<MetadataProcessing>,
+
     #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "false", help = "Insert channel metadata only when persisted value changes")]
     pub metadata_on_changed: Option<bool>,
-
-    #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "false", help = "Synchromnous insertion channel metadata sequentially before the data")]
-    pub metadata_synchronous: Option<bool>,
 
     #[arg(long, help = "Metadata queue size, if metadata writing is not synchronous")]
     pub metadata_queue: Option<usize>,
@@ -287,14 +294,14 @@ impl Cli {
             arguments.metadata_on_changed = value;
         }
 
-        if let Some(value) = self.metadata_synchronous {
-            arguments.metadata_synchronous = value;
+        if let Some(value) = self.metadata_processing {
+            arguments.metadata_processing = value;
         }
 
         if let Some(value) = self.metadata_queue {
             arguments.metadata_queue = value;
         }
-        
+
         if let Some(value) = self.create {
             arguments.create = value;
         }
