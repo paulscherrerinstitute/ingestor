@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::{Arguments, app, cql};
-use bsread::{IOError, IOResult};
+use bsread::{channel, IOError, IOResult, ScalarType};
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::observability::metrics::Metrics;
@@ -16,7 +16,9 @@ use tokio::sync::{OnceCell, RwLock};
 use std::sync::OnceLock;
 use scylla::_macro_internal::SerializeRow;
 use crate::arguments::StorageLayout;
+use crate::codec::{decode_optional, encode_to_i64, kind_to_dtype};
 use crate::cql::COLUMN_CHANNEL;
+use crate::ingestor::get_table_name;
 
 #[derive(scylla::DeserializeRow)]
 struct TableName {
@@ -290,6 +292,147 @@ impl DB {
             Ok(rows.remove(0))
         }
     }
+
+
+    pub async fn insert_blob(&self, table_name: &str, name: &str, kind: ScalarType, bucket: i64, id: i64, data:Option<Vec<u8>>) -> IOResult<()> {
+        let dtype = kind_to_dtype(kind);
+        self.insert_with_type(table_name, name,(name, bucket, id, data, dtype), ).await
+    }
+
+    pub async fn insert_asi64(&self, table_name: &str, name: &str, kind: ScalarType, bucket: i64, id: i64, data:Option<Vec<u8>>) -> IOResult<()> {
+        let data = encode_to_i64(kind, data)?;
+        let dtype = kind_to_dtype(kind);
+        self.insert_with_type(table_name, name,(name, bucket, id, data, dtype), ).await
+    }
+
+    pub async fn insert_typed(&self, table_name: &str, name: &str, kind: ScalarType, bucket: i64, id: i64, data: Option<Vec<u8>>,) -> IOResult<()> {
+        match kind {
+            ScalarType::string => {
+                let value = data
+                    .map(String::from_utf8)
+                    .transpose()
+                    .map_err(|e| IOError::new(ErrorKind::InvalidData, e))?;
+                self.insert(table_name, name,(name, bucket, id, value)).await
+            }
+            ScalarType::bool => {
+                let value = decode_optional(data,|b: [u8; 1]| b[0] != 0,)?;
+                self.insert(table_name, name, (name, bucket, id, value)).await
+            }
+            ScalarType::int8 => {
+                let value = decode_optional(data, i8::from_le_bytes)?;
+                self.insert(table_name, name, (name, bucket, id, value)).await
+            }
+            ScalarType::uint8 => {
+                let value = decode_optional(data, u8::from_le_bytes)?.map(i16::from);
+                self.insert(table_name, name, (name, bucket, id, value)).await
+            }
+            ScalarType::int16 => {
+                let value = decode_optional(data, i16::from_le_bytes)?;
+                self.insert(table_name, name, (name, bucket, id, value)).await
+            }
+            ScalarType::uint16 => {
+                let value = decode_optional(data, u16::from_le_bytes)?.map(i32::from);
+                self.insert(table_name, name, (name, bucket, id, value)).await
+            }
+            ScalarType::int32 => {
+                let value = decode_optional(data, i32::from_le_bytes)?;
+                self.insert(table_name, name, (name, bucket, id, value)).await
+            }
+            ScalarType::uint32 => {
+                let value = decode_optional(data, u32::from_le_bytes)?.map(i64::from);
+                self.insert(table_name, name, (name, bucket, id, value)).await
+            }
+            ScalarType::int64 => {
+                let value = decode_optional(data, i64::from_le_bytes)?;
+                self.insert(table_name, name, (name, bucket, id, value)).await
+            }
+            ScalarType::uint64 => {
+                // CQL has no uint64, so preserve the original bytes as a blob.
+                self.insert(table_name, name, (name, bucket, id, data)).await
+            }
+            ScalarType::float32 => {
+                let value = decode_optional(data, f32::from_le_bytes)?;
+                self.insert(table_name, name, (name, bucket, id, value)).await
+            }
+            ScalarType::float64 => {
+                let value = decode_optional(data, f64::from_le_bytes)?;
+                self.insert(table_name, name, (name, bucket, id, value)).await
+            }
+        }
+    }
+
+    pub async fn execute_statement_blob(&self, statement: &PreparedStatement, name: &str, kind: ScalarType, bucket: i64, id: i64, data: Option<Vec<u8>>) -> IOResult<()> {
+        let dtype = kind_to_dtype(kind);
+        self.execute_statement(statement, name, (name, bucket, id, data, dtype)).await
+    }
+
+    pub async fn execute_statement_i64(&self, statement: &PreparedStatement, name: &str, kind: ScalarType,bucket: i64,  id: i64, data: Option<Vec<u8>>) -> IOResult<()> {
+        let data = encode_to_i64(kind, data)?;
+        let dtype = kind_to_dtype(kind);
+        self.execute_statement(statement, name, (name, bucket, id, data, dtype)).await
+    }
+
+    pub async fn execute_statement_typed(&self,statement: &PreparedStatement,name: &str,kind: ScalarType, bucket: i64, id: i64, data: Option<Vec<u8>>,) -> IOResult<()> {
+        match kind {
+            ScalarType::string => {
+                let value = data
+                    .map(String::from_utf8)
+                    .transpose()
+                    .map_err(|e| IOError::new(ErrorKind::InvalidData, e))?;
+                self.execute_statement(statement, name, (name, bucket, id, value)).await
+            }
+            ScalarType::bool => {
+                let value = decode_optional(data, |b: [u8; 1]| b[0] != 0)?;
+                self.execute_statement(statement, name, (name, bucket, id, value)).await
+            }
+            ScalarType::int8 => {
+                let value = decode_optional(data, i8::from_le_bytes)?;
+                self.execute_statement(statement, name, (name, bucket, id, value)).await
+            }
+            ScalarType::uint8 => {
+                let value = decode_optional(data, u8::from_le_bytes)?.map(i16::from);
+                self.execute_statement(statement, name, (name, bucket, id, value)).await
+            }
+            ScalarType::int16 => {
+                let value = decode_optional(data, i16::from_le_bytes)?;
+                self.execute_statement(statement, name, (name, bucket, id, value)).await
+            }
+            ScalarType::uint16 => {
+                let value = decode_optional(data, u16::from_le_bytes)?.map(i32::from);
+                self.execute_statement(statement, name, (name, bucket, id, value)).await
+            }
+            ScalarType::int32 => {
+                let value = decode_optional(data, i32::from_le_bytes)?;
+                self.execute_statement(statement, name, (name, bucket, id, value)).await
+            }
+            ScalarType::uint32 => {
+                let value = decode_optional(data, u32::from_le_bytes)?.map(i64::from);
+                self.execute_statement(statement, name, (name, bucket, id, value)).await
+            }
+            ScalarType::int64 => {
+                let value = decode_optional(data, i64::from_le_bytes)?;
+                self.execute_statement(statement, name, (name, bucket, id, value)).await
+            }
+            ScalarType::uint64 => {
+                // uint64 is represented as CQL blob.
+                self.execute_statement(statement, name, (name, bucket, id, data)).await
+            }
+            ScalarType::float32 => {
+                let value = decode_optional(data, f32::from_le_bytes)?;
+                self.execute_statement(statement, name, (name, bucket, id, value)).await
+            }
+            ScalarType::float64 => {
+                let value = decode_optional(data, f64::from_le_bytes)?;
+                self.execute_statement(statement, name, (name, bucket, id, value)).await
+            }
+        }
+    }
+    pub  async fn execute_statement_channel_metadata(&self, statement: &PreparedStatement, name: &str, kind: ScalarType, count:usize, from: i64) -> IOResult<()> {
+        let dtype = kind_to_dtype(kind);
+        self.execute_statement(statement, name, (name, from, dtype, count as i32)).await
+    }
+
+
 
     pub fn metrics(&self) -> Option<ScyllaMetrics>{
         Some(ScyllaMetrics::from_metrics(self.session()?.get_metrics()))

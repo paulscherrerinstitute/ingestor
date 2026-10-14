@@ -42,12 +42,10 @@ impl ChannelProcessor {
 
         if header_changed {
             let result = self.ingestor.on_header_change(&config.name(), config.kind(), &config.shape(), config.elements(), config.size(), id, tm).await;
-            self.check_append_result(id, METADATA_ERRORS_NAME, result);
+            self.check_append_result(id, METADATA_ERRORS_NAME, result); // Should always be ok, errors handled in metadata ingestion
         }
 
-
         let (name, kind, shape, elements) = config.into_parts();
-
         let result = self.ingestor.append_record(&name,kind, &shape, elements, id, tm, data).await;
         self.check_append_result(id, &name, result);
     }
@@ -57,21 +55,12 @@ impl ChannelProcessor {
         if let Err(e) = result{
             if self.channel_errors.read().unwrap().get(name).map(|error| {error.suppressed.fetch_add(1, Ordering::Relaxed);}).is_none() {
                 self.channel_errors.write().unwrap().insert(name.to_string(), ChannelError{ kind: e.kind(), suppressed: AtomicU64::new(0)});
-                if name == METADATA_ERRORS_NAME {
-                    log::error!("Error appending metadata for channel {} on id {}: {}", name, id, e);
-                } else {
-                    log::error!("Error appending record id {} for channel {}: {}",id, name, e);
-                }
+                log::error!("Error appending record id {} for channel {}: {}",id, name, e);
             }
         } else {
             if  self.channel_errors.read().unwrap().contains_key(name) {
                 if let Some(error) = self.channel_errors.write().unwrap().remove(name) {
-                    if name == METADATA_ERRORS_NAME {
-                        log::info!("Metadata recovered on id {}: suppressed {} errors",  id, error.suppressed.load(Ordering::Relaxed));
-                    } else {
-                        log::info!("Channel {} recovered on id {}: suppressed {} errors", name,  id, error.suppressed.load(Ordering::Relaxed));
-                    }
-                }
+                log::info!("Channel {} recovered on id {}: suppressed {} errors", name,  id, error.suppressed.load(Ordering::Relaxed)); }
             }
         }
     }

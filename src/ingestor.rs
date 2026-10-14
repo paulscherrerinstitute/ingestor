@@ -5,6 +5,7 @@ use crate::DB;
 use crate::cql;
 use crate::codec::*;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use bsread::{channel, IOError, IOResult, ScalarType, SocketType};
 use log::error;
@@ -65,12 +66,13 @@ pub struct Ingestor {
     db: Arc<DB>,
     insert_statements: RwLock<HashMap<String, PreparedStatement>>,
     channel_metadata: RwLock<HashMap<String, ChannelMetadata>>,
+    metadata_errors: Arc<AtomicU64>,
 }
 
 
 impl Ingestor {
     pub fn new(arguments:Arc<Arguments>, db:Arc<DB>) -> Self {
-        Self { arguments, db, insert_statements: RwLock::new(HashMap::new()), channel_metadata:RwLock::new(HashMap::new())}
+        Self { arguments, db, insert_statements: RwLock::new(HashMap::new()), channel_metadata:RwLock::new(HashMap::new()), metadata_errors: Arc::new(AtomicU64::new(0))}
     }
 
 
@@ -108,8 +110,8 @@ impl Ingestor {
         self.db.create_channel_metadata_table(TABLE_CHANNEL_METADATA).await?;
         self.insert_statements.write().await.insert(TABLE_CHANNEL_METADATA.to_string(), self.db.create_channel_metadata_insert_statement(TABLE_CHANNEL_METADATA).await?);
         self.channel_metadata.write().await.clear();
-        
-        if self.arguments.log_metadata_on_change {
+
+        if self.arguments.metadata_on_changed {
             //TODO: can I retrieve the latest metadata for each channel with a single CQL call?
             let channels = self.db.fetch_channels(TABLE_CHANNEL_METADATA).await;
             match channels {
@@ -153,7 +155,7 @@ impl Ingestor {
     }
 
     pub async fn on_day_change(&self) -> IOResult<()> {
-        if !self.arguments.log_metadata_on_change {
+        if !self.arguments.metadata_on_changed {
             log::info!("On-day change event: updating the channel metadata entries");
             //Make sure metadata table is updated every day
             self.channel_metadata.write().await.clear();
@@ -161,7 +163,7 @@ impl Ingestor {
         Ok(())
     }
 
-    
+
     pub async fn on_header_change(&self, name:&str, kind:ScalarType, shape:&Option<Vec<u32>>, elements:usize, size:usize, id: u64, tm: (u64, u64)) -> IOResult<()> {
         if self.db.enabled_session().is_some() {
             let metadata = self.channel_metadata.read().await.get(name).cloned(); //Lock released
@@ -177,7 +179,16 @@ impl Ingestor {
                 self.channel_metadata.write().await.insert(name.to_string(), ChannelMetadata { from: id, kind: kind, count: elements });
                 let insert_statement = self.insert_statements.read().await.get(TABLE_CHANNEL_METADATA).cloned();
                 if let Some(statement) = insert_statement {
-                    self.execute_statement_channel_metadata(&statement, name, kind, elements, id as i64).await?
+                    if self.arguments.metadata_synchronous {
+                        Self::append_metadata(&self.db, &self.metadata_errors, &statement, name, kind, elements, id).await;
+                    } else {
+                        let metadata_errors = self.metadata_errors.clone();
+                        let db = self.db.clone();
+                        let name = name.to_string();
+                        tokio::spawn(async move {
+                            Self::append_metadata(&db, &metadata_errors, &statement, &name, kind, elements, id).await;
+                        });
+                    }
                 } else {
                     return Err(IOError::other("Insert statement for channel metadata table not found"));
                 }
@@ -186,7 +197,30 @@ impl Ingestor {
         Ok(())
     }
 
-pub async fn append_record(&self, name:&str,  kind:ScalarType, shape:&Option<Vec<u32>>, elements:usize, id: u64, tm: (u64, u64), data:Option<Vec<u8>>) -> IOResult<()> {
+    async fn append_metadata(db:&DB, metadata_errors:&Arc<AtomicU64>, statement: &PreparedStatement, name:&str, kind:ScalarType,  elements:usize, id: u64) {
+        let result = db.execute_statement_channel_metadata(&statement, name, kind, elements, id as i64).await;
+        Self::check_append_metadata_result(id, name, result, metadata_errors);
+    }
+
+
+    fn check_append_metadata_result(id: u64, name: &str, result: IOResult<()>, metadata_errors:&Arc<AtomicU64>) {
+        match result {
+            Err(e) => {
+                let previous = metadata_errors.fetch_add(1, Ordering::Relaxed);
+                if previous == 0 {
+                    log::error!("Error appending metadata for channel {} on id {}: {}",name, id, e);
+                }
+            }
+            Ok(()) => {
+                let failures = metadata_errors.swap(0, Ordering::Relaxed);
+                if failures > 0 {
+                    log::info!("Metadata recovered on id {}: suppressed {} errors",id,failures - 1);
+                }
+            }
+        }
+    }
+
+    pub async fn append_record(&self, name:&str,  kind:ScalarType, shape:&Option<Vec<u32>>, elements:usize, id: u64, tm: (u64, u64), data:Option<Vec<u8>>) -> IOResult<()> {
         if self.db.enabled_session().is_some() {
             let table_name = get_table_name(&self.arguments.storage_layout, name, kind, &shape);
             let id = id as i64;
@@ -206,164 +240,24 @@ pub async fn append_record(&self, name:&str,  kind:ScalarType, shape:&Option<Vec
                 None => {
                     log::warn!("Insert statement with name {} not found", name);
                     if is_scalar_i64 {
-                        self.insert_asi64(&table_name, name, kind, bucket, id, data).await?;
+                        self.db.insert_asi64(&table_name, name, kind, bucket, id, data).await?;
                     } else if is_array {
-                        self.insert_blob(&table_name, name, kind, bucket, id, data).await?;
+                        self.db.insert_blob(&table_name, name, kind, bucket, id, data).await?;
                     } else {
-                        self.insert_typed(&table_name, name, kind, bucket, id, data).await?;
+                        self.db.insert_typed(&table_name, name, kind, bucket, id, data).await?;
                     }
                 }
                 Some(statement) => {
                     if is_scalar_i64 {
-                        self.execute_statement_i64(&statement, name, kind, bucket, id, data).await?;
+                        self.db.execute_statement_i64(&statement, name, kind, bucket, id, data).await?;
                     } else if is_array {
-                        self.execute_statement_blob(&statement, name, kind, bucket, id, data).await?;
+                        self.db.execute_statement_blob(&statement, name, kind, bucket, id, data).await?;
                     } else {
-                        self.execute_statement_typed(&statement, name, kind, bucket, id, data).await?;
+                        self.db.execute_statement_typed(&statement, name, kind, bucket, id, data).await?;
                     }
                 }
             }
         }
         Ok(())
-    }
-
-
-
-    async fn insert_blob(&self, table_name: &str, name: &str, kind: ScalarType, bucket: i64, id: i64, data:Option<Vec<u8>>) -> IOResult<()> {
-        let dtype = kind_to_dtype(kind);
-        self.db.insert_with_type(table_name, name,(name, bucket, id, data, dtype), ).await
-    }
-
-    async fn insert_asi64(&self, table_name: &str, name: &str, kind: ScalarType, bucket: i64, id: i64, data:Option<Vec<u8>>) -> IOResult<()> {
-        let data = encode_to_i64(kind, data)?;
-        let dtype = kind_to_dtype(kind);
-        self.db.insert_with_type(table_name, name,(name, bucket, id, data, dtype), ).await
-    }
-
-    async fn insert_typed(&self, table_name: &str, name: &str, kind: ScalarType, bucket: i64, id: i64, data: Option<Vec<u8>>,) -> IOResult<()> {
-        match kind {
-            ScalarType::string => {
-                let value = data
-                    .map(String::from_utf8)
-                    .transpose()
-                    .map_err(|e| IOError::new(ErrorKind::InvalidData, e))?;
-                self.db.insert(table_name, name,(name, bucket, id, value)).await
-            }
-            ScalarType::bool => {
-                let value = decode_optional(data,|b: [u8; 1]| b[0] != 0,)?;
-                self.db.insert(table_name, name, (name, bucket, id, value)).await
-            }
-            ScalarType::int8 => {
-                let value = decode_optional(data, i8::from_le_bytes)?;
-                self.db.insert(table_name, name, (name, bucket, id, value)).await
-            }
-            ScalarType::uint8 => {
-                let value = decode_optional(data, u8::from_le_bytes)?.map(i16::from);
-                self.db.insert(table_name, name, (name, bucket, id, value)).await
-            }
-            ScalarType::int16 => {
-                let value = decode_optional(data, i16::from_le_bytes)?;
-                self.db.insert(table_name, name, (name, bucket, id, value)).await
-            }
-            ScalarType::uint16 => {
-                let value = decode_optional(data, u16::from_le_bytes)?.map(i32::from);
-                self.db.insert(table_name, name, (name, bucket, id, value)).await
-            }
-            ScalarType::int32 => {
-                let value = decode_optional(data, i32::from_le_bytes)?;
-                self.db.insert(table_name, name, (name, bucket, id, value)).await
-            }
-            ScalarType::uint32 => {
-                let value = decode_optional(data, u32::from_le_bytes)?.map(i64::from);
-                self.db.insert(table_name, name, (name, bucket, id, value)).await
-            }
-            ScalarType::int64 => {
-                let value = decode_optional(data, i64::from_le_bytes)?;
-                self.db.insert(table_name, name, (name, bucket, id, value)).await
-            }
-            ScalarType::uint64 => {
-                // CQL has no uint64, so preserve the original bytes as a blob.
-                self.db.insert(table_name, name, (name, bucket, id, data)).await
-            }
-            ScalarType::float32 => {
-                let value = decode_optional(data, f32::from_le_bytes)?;
-                self.db.insert(table_name, name, (name, bucket, id, value)).await
-            }
-            ScalarType::float64 => {
-                let value = decode_optional(data, f64::from_le_bytes)?;
-                self.db.insert(table_name, name, (name, bucket, id, value)).await
-            }
-        }
-    }
-
-    async fn execute_statement_blob(&self, statement: &PreparedStatement, name: &str, kind: ScalarType, bucket: i64, id: i64, data: Option<Vec<u8>>) -> IOResult<()> {
-        let dtype = kind_to_dtype(kind);
-        self.db.execute_statement(statement, name, (name, bucket, id, data, dtype)).await
-    }
-
-    async fn execute_statement_i64(&self, statement: &PreparedStatement, name: &str, kind: ScalarType,bucket: i64,  id: i64, data: Option<Vec<u8>>) -> IOResult<()> {
-        let data = encode_to_i64(kind, data)?;
-        let dtype = kind_to_dtype(kind);
-        self.db.execute_statement(statement, name, (name, bucket, id, data, dtype)).await
-    }
-
-    async fn execute_statement_typed(&self,statement: &PreparedStatement,name: &str,kind: ScalarType, bucket: i64, id: i64, data: Option<Vec<u8>>,) -> IOResult<()> {
-        match kind {
-            ScalarType::string => {
-                let value = data
-                    .map(String::from_utf8)
-                    .transpose()
-                    .map_err(|e| IOError::new(ErrorKind::InvalidData, e))?;
-                self.db.execute_statement(statement, name, (name, bucket, id, value)).await
-            }
-            ScalarType::bool => {
-                let value = decode_optional(data, |b: [u8; 1]| b[0] != 0)?;
-                self.db.execute_statement(statement, name, (name, bucket, id, value)).await
-            }
-            ScalarType::int8 => {
-                let value = decode_optional(data, i8::from_le_bytes)?;
-                self.db.execute_statement(statement, name, (name, bucket, id, value)).await
-            }
-            ScalarType::uint8 => {
-                let value = decode_optional(data, u8::from_le_bytes)?.map(i16::from);
-                self.db.execute_statement(statement, name, (name, bucket, id, value)).await
-            }
-            ScalarType::int16 => {
-                let value = decode_optional(data, i16::from_le_bytes)?;
-                self.db.execute_statement(statement, name, (name, bucket, id, value)).await
-            }
-            ScalarType::uint16 => {
-                let value = decode_optional(data, u16::from_le_bytes)?.map(i32::from);
-                self.db.execute_statement(statement, name, (name, bucket, id, value)).await
-            }
-            ScalarType::int32 => {
-                let value = decode_optional(data, i32::from_le_bytes)?;
-                self.db.execute_statement(statement, name, (name, bucket, id, value)).await
-            }
-            ScalarType::uint32 => {
-                let value = decode_optional(data, u32::from_le_bytes)?.map(i64::from);
-                self.db.execute_statement(statement, name, (name, bucket, id, value)).await
-            }
-            ScalarType::int64 => {
-                let value = decode_optional(data, i64::from_le_bytes)?;
-                self.db.execute_statement(statement, name, (name, bucket, id, value)).await
-            }
-            ScalarType::uint64 => {
-                // uint64 is represented as CQL blob.
-                self.db.execute_statement(statement, name, (name, bucket, id, data)).await
-            }
-            ScalarType::float32 => {
-                let value = decode_optional(data, f32::from_le_bytes)?;
-                self.db.execute_statement(statement, name, (name, bucket, id, value)).await
-            }
-            ScalarType::float64 => {
-                let value = decode_optional(data, f64::from_le_bytes)?;
-                self.db.execute_statement(statement, name, (name, bucket, id, value)).await
-            }
-        }
-    }
-    async fn execute_statement_channel_metadata(&self, statement: &PreparedStatement, name: &str, kind: ScalarType, count:usize, from: i64) -> IOResult<()> {
-        let dtype = kind_to_dtype(kind);
-        self.db.execute_statement(statement, name, (name, from, dtype, count as i32)).await
     }
 }
