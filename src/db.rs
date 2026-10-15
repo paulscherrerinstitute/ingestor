@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::{Arguments, app, cql};
-use bsread::{channel, IOError, IOResult, ScalarType};
+use bsread::{channel, IOError, IOResult, ScalarType, ChannelConfig};
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::observability::metrics::Metrics;

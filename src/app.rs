@@ -229,6 +229,7 @@ impl App {
         })?;
         let engine_client = self.engine_client.clone();
         let ingestor = self.ingestor.clone();
+        let processor = self.processor.clone();
         let timer_handle  = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
             let mut current_day = chrono::Local::now().date_naive();
@@ -237,6 +238,9 @@ impl App {
                 let today = chrono::Local::now().date_naive();
                 if let Err(e) = engine_client.on_timer().await{
                     log::error!("Error on engine timer: {:?}", e);
+                }
+                if let Err(e) = processor.on_timer().await{
+                    log::error!("Error on processor timer: {:?}", e);
                 }
                 if let Err(e) = ingestor.on_timer().await{
                     log::error!("Error on ingestor timer: {:?}", e);

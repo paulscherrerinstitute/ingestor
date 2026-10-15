@@ -1,15 +1,16 @@
 use crate::Arguments;
 use crate::channel_processor::ChannelProcessor;
-use bsread::{Bsread, ChannelConfig, ChannelData, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Message, Pool, Receiver, ScalarType, SocketType};
+use bsread::{ChannelConfig, ChannelData, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Message, Pool, Receiver, ScalarType, SocketType};
 use futures::future::join_all;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::ErrorKind;
-use std::io::{self, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering, AtomicUsize};
-use std::sync::{Mutex, RwLock};
-use crate::arguments::ChannelProcessing;
+use std::sync::{RwLock};
+use tokio::sync::mpsc::channel;
+use crate::arguments::{ChannelProcessing, MetadataProcessing};
+use crate::ingestor::ChannelMetadata;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChannelInfo{
@@ -53,17 +54,46 @@ pub struct Processor {
     channel_processor: Arc<ChannelProcessor>,
     stats: Arc<ProcessorStats>,
     channel_buffers:Arc<RwLock<HashMap<String,tokio::sync::mpsc::Sender<ChannelMessage>>>>,
+    metadata_sender: tokio::sync::mpsc::Sender<MetadataCommand>,
+    failed_metadata_records: Arc<tokio::sync::RwLock<Vec<ChannelMetadata>>>,
+}
+
+pub enum MetadataCommand {
+    Insert {
+        name:String,  id: u64, kind:ScalarType, elements:usize
+    },
 }
 
 
 impl Processor {
     pub fn new(arguments:Arc<Arguments>, channel_processor: Arc<ChannelProcessor>) -> Self {
+        let (metadata_sender, mut metadata_receiver) = channel::<MetadataCommand>(arguments.metadata_queue);
+        let failed_metadata_records = Arc::new(tokio::sync::RwLock::new(Vec::new()));
+
+        if arguments.metadata_processing == MetadataProcessing::Queued {
+            let _channel_processor = channel_processor.clone();
+            let _failed_metadata_records = failed_metadata_records.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = metadata_receiver.recv().await {
+                    match msg {
+                        MetadataCommand::Insert { name, id, kind, elements } => {
+                            if let Err(e) = _channel_processor.process_metadata(&name, id, kind, elements).await{
+                                _failed_metadata_records.write().await.push(ChannelMetadata{name: Some(name.to_string()),from: id, kind, count: elements});
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
         Self {
             arguments,
             sources_info: Arc::new(RwLock::new(HashMap::new())),
             channel_processor,
             stats: Arc::new(ProcessorStats{pending:AtomicU32::new(0), treated:AtomicU32::new(0), dropped:AtomicU32::new(0)}),
             channel_buffers:Arc::new(RwLock::new(HashMap::new())),
+            metadata_sender,
+            failed_metadata_records
         }
     }
 
@@ -71,6 +101,14 @@ impl Processor {
         if let Err(err) = self.check_msg(&endpoint, &message){
             log::debug!("Message check failed: {}", err);
         } else {
+            if message.header_changed() && self.arguments.metadata_processing != MetadataProcessing::Sync {
+                let id = message.id();
+                for channel in message.channels() {
+                    let config = channel.config();
+                    self.send_metadata(config.name(), id, config.kind(),config.elements());
+                }
+            }
+
             match self.arguments.channel_processing {
                 ChannelProcessing::Sync => {
                     let (id, tm, header_changed, channels, data) = message.into_parts();
@@ -136,6 +174,11 @@ impl Processor {
                         let channel_name = config.name();
                         let stats = Arc::clone(&self.stats);
                         let channel_processor = Arc::clone(&self.channel_processor);
+
+                        if header_changed && self.arguments.metadata_processing != MetadataProcessing::Sync {
+                            self.send_metadata(config.name(), id, config.kind(),config.elements());
+                        }
+
                         if let Ok(data) = Self::as_bytes(&config, value) {
                             let sender = {
                                 self.channel_buffers.read().unwrap().get(&channel_name).cloned()
@@ -176,7 +219,6 @@ impl Processor {
             }
         }
     }
-
 
     fn check_msg(&self, endpoint: &Option<String>, message: &Message) -> IOResult<()> {
         let id = message.id() ;
@@ -224,6 +266,60 @@ impl Processor {
         source_info.last_id = id;
         Ok(())
     }
+
+
+    fn send_metadata(&self, name:String, id:u64, kind:ScalarType, elements:usize) -> bool {
+        match self.arguments.metadata_processing {
+            MetadataProcessing::Sync => {
+            }
+            MetadataProcessing::Async => {
+                let channel_processor = self.channel_processor.clone();
+                let failed_metadata_records = self.failed_metadata_records.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = channel_processor.process_metadata(&name,  id, kind, elements).await {
+                        failed_metadata_records.write().await.push(ChannelMetadata{name: Some(name.to_string()),from: id, kind, count: elements});
+                    }
+                });
+            }
+            MetadataProcessing::Queued => {
+                match self.metadata_sender.try_send(MetadataCommand::Insert { name, id, kind, elements }) {
+                    Ok(()) => {
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
+                        match(msg){
+                            MetadataCommand::Insert {name,  id, kind, elements} => {
+                                log::warn!("Dropping  metadata insert command {}-{}-{}-{} : metadata queue is full", &name,  id, kind, elements);
+                            }
+                        }
+                        return false
+                    }
+                    Err(err) => {
+                        log::error!("Metadata handler is not running",);
+                        return false
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    pub async fn on_timer(&self) -> IOResult<()> {
+        if self.arguments.metadata_processing != MetadataProcessing::Sync {
+            let  failed_metadata_records = self.failed_metadata_records.read().await.clone();
+            if !failed_metadata_records.is_empty() {
+                log::info!("Retrying sending channel metadata");
+                for record in failed_metadata_records {
+                    if let Some(name) = &record.name {
+                        if self.send_metadata(name.to_string(), record.from, record.kind, record.count) {
+                            self.failed_metadata_records.write().await.retain(|rec| rec.name != record.name || rec.from != record.from);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
 
     fn as_bytes(config: &ChannelConfig, data: Option<ChannelData>) -> IOResult<Option<Vec<u8>>> {
          match data {

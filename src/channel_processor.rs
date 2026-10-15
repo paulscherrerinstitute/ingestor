@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use crate::Arguments;
-use crate::ingestor::{Ingestor};
+use crate::ingestor::Ingestor;
 use bsread::{ChannelConfig, IOResult, ScalarType};
 use chrono::Local;
 use log::LevelFilter;
@@ -8,8 +8,8 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, Write, ErrorKind};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock, atomic::{AtomicU64, Ordering}};
-use crate::app::State::Paused;
+use std::sync::{Arc, RwLock, atomic::{AtomicU64, Ordering}};
+use crate::arguments::{ MetadataProcessing};
 
 struct ChannelError {
     kind: ErrorKind,
@@ -20,13 +20,18 @@ pub struct ChannelProcessor {
     arguments: Arc<Arguments>,
     ingestor: Arc<Ingestor>,
     channel_errors: RwLock<HashMap<String, ChannelError>>,
+    metadata_errors: Arc<AtomicU64>,
 }
 
 const METADATA_ERRORS_NAME: &str = "_metadata_";
 
 impl ChannelProcessor {
     pub fn new(arguments: Arc<Arguments>, ingestor: Arc<Ingestor>) -> Self {
-        Self {arguments, ingestor, channel_errors:RwLock::new(HashMap::new())}
+        Self {arguments,
+             ingestor,
+             channel_errors:RwLock::new(HashMap::new()),
+             metadata_errors: Arc::new(AtomicU64::new(0))
+        }
     }
 
     pub async fn process(&self, id: u64, tm: (u64, u64), config: ChannelConfig, data: Option<Vec<u8>>, header_changed: bool) {
@@ -40,12 +45,11 @@ impl ChannelProcessor {
             log::trace!("Processing Channel name:{} type:{:?} shape:{:?} [ID:{}]", config.name(), config.kind(), config.shape(), id);
         }
 
-        if header_changed {
-            let result = self.ingestor.on_header_change(&config.name(), config.kind(), &config.shape(), config.elements(), config.size(), id, tm).await;
-            self.check_append_result(id, METADATA_ERRORS_NAME, result); // Should always be ok, errors handled in metadata ingestion
-        }
 
         let (name, kind, shape, elements) = config.into_parts();
+        if header_changed && self.arguments.metadata_processing == MetadataProcessing::Sync {
+            self.process_metadata(&name, id, kind, elements).await;
+        }
         let result = self.ingestor.append_record(&name,kind, &shape, elements, id, tm, data).await;
         self.check_append_result(id, &name, result);
     }
@@ -99,5 +103,25 @@ impl ChannelProcessor {
         }
         Ok(())
     }
+
+    pub async fn process_metadata(&self, name:&str,  id: u64, kind:ScalarType, elements:usize) -> IOResult<()> {
+        match self.ingestor.append_metadata(name, kind, elements, id).await {
+            Ok(_) => {
+                let failures =self.metadata_errors.swap(0, Ordering::Relaxed);
+                if failures > 0 {
+                    log::info!("Metadata recovered on id {}: suppressed {} errors",id,failures - 1);
+                }
+                Ok(())
+            }
+            Err(e) => {
+                let previous = self.metadata_errors.fetch_add(1, Ordering::Relaxed);
+                if previous == 0 {
+                    log::error!("Error appending metadata for channel {} on id {}: {}",name, id, e);
+                }
+                Err(e)
+            }
+        }
+    }
+
 
 }
