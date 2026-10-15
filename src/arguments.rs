@@ -42,7 +42,7 @@ pub enum ChannelProcessing {
 pub enum MetadataProcessing {
     Sync,
     Async,
-    Queued
+    Buffered
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ValueEnum, PartialEq)]
@@ -80,8 +80,8 @@ pub struct Arguments {
     pub blocking_config:bool,
     pub message_processing: MessageProcessing,
     pub channel_processing:ChannelProcessing,
-    pub storage_layout:StorageLayout,
     pub metadata_processing:MetadataProcessing,
+    pub storage_layout:StorageLayout,
     pub metadata_on_changed:bool,
     pub metadata_queue: usize,
     pub create:bool,
@@ -106,8 +106,8 @@ impl Default for Arguments {
             blocking_config: true,
             message_processing: MessageProcessing::Direct , //Ordered,
             channel_processing: ChannelProcessing::Buffered, //Joined,
+            metadata_processing: MetadataProcessing::Buffered,
             storage_layout: StorageLayout::Default,
-            metadata_processing: MetadataProcessing::Queued,
             metadata_on_changed: false,
             metadata_queue: 10000,
             create: false,
@@ -197,15 +197,15 @@ pub struct Cli {
     #[arg(long, value_enum, help = "How channel values are propagated for writing (default: buffered)")]
     pub channel_processing: Option<ChannelProcessing>,
 
+    #[arg(long, value_enum, help = "Channel metadata writing mode (default: Queued)")]
+    pub metadata_processing: Option<MetadataProcessing>,
+
     #[arg(long, value_enum, help = "Database layout - Default stores all scalars as bigint")]
     pub storage_layout: Option<StorageLayout>,
 
     #[arg(long, help = "Data output path")]
     pub output_path: Option<PathBuf>,
-
-    #[arg(long, value_enum, help = "Channel metadata writing mode (default: Queued)")]
-    pub metadata_processing: Option<MetadataProcessing>,
-
+    
     #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "false", help = "Insert channel metadata only when persisted value changes")]
     pub metadata_on_changed: Option<bool>,
 
@@ -286,12 +286,12 @@ impl Cli {
             arguments.channel_processing = value;
         }
 
-        if let Some(value) = self.storage_layout {
-            arguments.storage_layout = value;
-        }
-
         if let Some(value) = self.metadata_on_changed {
             arguments.metadata_on_changed = value;
+        }
+
+        if let Some(value) = self.storage_layout {
+            arguments.storage_layout = value;
         }
 
         if let Some(value) = self.metadata_processing {
