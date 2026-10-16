@@ -23,6 +23,9 @@ pub enum EngineCommand {
         response: tokio::sync::oneshot::Sender<IOResult<()>>,
     },
     Timer {
+        minute_changed: bool,
+        hour_changed: bool,
+        day_changed: bool,
         response: tokio::sync::oneshot::Sender<IOResult<()>>,
     },
     Config {
@@ -106,8 +109,8 @@ impl Engine {
                         let _ = response.send(result);
                     }
 
-                    EngineCommand::Timer { response } => {
-                        engine.on_timer();
+                    EngineCommand::Timer { minute_changed, hour_changed, day_changed,response } => {
+                        engine.on_timer( minute_changed, hour_changed, day_changed);
                         let _ = response.send(Ok(()));
                     }
 
@@ -170,17 +173,6 @@ impl Engine {
         for source in self.sources.clone() {
             self.try_connect_endpoint(&source.address, &source.socket_type.map(Into::into));
         }
-
-        //for i in 1000..1200{
-        //    self.try_connect_endpoint(&format!("tcp://129.129.66.28:{}", i), None);
-        //}
-        //for i in 10..210{
-        //    self.try_connect_endpoint(&format!("tcp://129.129.66.{}:1000", i), None);
-        //}
-
-        //let futures = self.endpoints.clone().into_iter()
-        //    .map(|endpoint| self.try_connect_endpoint(&endpoint));
-        //join_all(futures).await;
         log::info!("Started in {:?}", start.elapsed());
         Ok(())
     }
@@ -536,7 +528,7 @@ impl Engine {
 
 
     //Every 10s
-    pub fn on_timer(&mut self)  {
+    pub fn on_timer(&mut self, minute_changed: bool, hour_changed: bool, day_changed: bool)  {
         let received = self. messages();
         let errors =  self.errors();
         let dropped =  self.dropped();
@@ -548,7 +540,7 @@ impl Engine {
         let metadata_pending = self.processor.metadata_pending();
         let metadata_treated = self.processor.metadata_treated();
         let metadata_dropped = self.processor.metadata_dropped();
-        
+
 
         let (received_rate, errors_rate, dropped_rate, processed_rate, treated_rate, channel_dropped_rate, max_pending, max_processing) = if let Some(last_stats) = self.last_stats.as_ref() {
             let new_received = if received < last_stats.received{received} else {received - last_stats.received};
@@ -568,7 +560,7 @@ impl Engine {
             received,errors, dropped, processing, processed,channel_dropped,
             received_rate, errors_rate, dropped_rate, processed_rate, treated_rate, channel_dropped_rate,
             max_pending, max_processing, pending, treated,
-            metadata_pending, metadata_treated, metadata_dropped, 
+            metadata_pending, metadata_treated, metadata_dropped,
             duplicated_sources:0, disabled_sources:0,
             connected_sources:0, connecting_sources: 0, disconnected_sources: 0,
             cpu:0.0, memory:0, files:0

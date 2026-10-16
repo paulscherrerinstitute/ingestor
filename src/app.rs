@@ -5,7 +5,7 @@ use crate::engine::Engine;
 use crate::engine_client::EngineClient;
 use crate::ingestor::Ingestor;
 use crate::processor::{Processor, SourceInfo};
-use crate::Arguments;
+use crate::{exit, Arguments};
 use bsread::{EndpointDiag, EndpointState, IOError, IOResult, SocketType};
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use chrono::Timelike;
 use scylla::response::query_result::QueryResult;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::task::JoinHandle;
@@ -151,8 +152,9 @@ impl App {
     }
 
     pub async fn stop(& mut self) -> IOResult<()> {
-        log::info!("Stpping service");
+        log::info!("Stopping service");
         self.set_state(State::Stopping);
+        self.set_db_enabled(false).await;
         if let Some(handle) = self.timer_handle.take() {
             handle.abort();
             self.timer_handle = None;
@@ -233,31 +235,32 @@ impl App {
         let engine_client = self.engine_client.clone();
         let ingestor = self.ingestor.clone();
         let processor = self.processor.clone();
-        let channel_rocessor = self.channel_processor.clone();
+        let channel_processor = self.channel_processor.clone();
         let timer_handle  = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
-            let mut current_day = chrono::Local::now().date_naive();
+            let now = chrono::Local::now();
+            let (mut current_day, mut current_hour,mut  current_minute) =
+                (now.date_naive(), now.hour(), now.minute());
             loop {
                 interval.tick().await;
-                let today = chrono::Local::now().date_naive();
-                if let Err(e) = engine_client.on_timer().await{
+                let now = chrono::Local::now();
+                let (today, hour, minute) = (now.date_naive(), now.hour(), now.minute());
+                let (day_changed, hour_changed, minute_changed) =
+                    (today != current_day,hour != current_hour,minute != current_minute);
+
+                if let Err(e) = engine_client.on_timer(minute_changed, hour_changed, day_changed).await{
                     log::error!("Error on engine timer: {:?}", e);
                 }
-                if let Err(e) = processor.on_timer().await{
+                if let Err(e) = processor.on_timer(minute_changed, hour_changed, day_changed).await{
                     log::error!("Error on processor timer: {:?}", e);
                 }
-                if let Err(e) = channel_rocessor.on_timer().await{
+                if let Err(e) = channel_processor.on_timer(minute_changed, hour_changed, day_changed).await{
                     log::error!("Error on channel processor timer: {:?}", e);
                 }
-                if let Err(e) = ingestor.on_timer().await{
+                if let Err(e) = ingestor.on_timer(minute_changed, hour_changed, day_changed).await{
                     log::error!("Error on ingestor timer: {:?}", e);
                 }
-                if today != current_day {
-                    current_day = today;
-                    if let Err(e) = ingestor.on_day_change().await{
-                        log::error!("Error on ingestor day change event: {:?}", e);
-                    }
-                }
+                (current_day, current_hour, current_minute)  = (today, hour, minute);
             }
         });
         self.timer_handle = Some(timer_handle);
@@ -339,9 +342,12 @@ impl App {
     }
 
 
-    pub fn close(&mut self) -> IOResult<()> {
+    pub async fn close(&mut self) {
+        if let  Err(e) = self.stop().await{
+            log::error!("Error stopping application{}", e);
+        }
         self.set_state(State::Closed);
-        Ok(())
+        exit(None)
     }
 }
 impl Drop for App {

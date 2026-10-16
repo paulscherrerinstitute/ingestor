@@ -134,6 +134,15 @@ async fn pause(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, Ap
     Ok(Response::ok())
 }
 
+async fn close(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, AppError>  {
+    log::info!("API call: close");
+    tokio::spawn(async move {
+        let mut app = app.write().await;
+        app.close().await;
+    });
+    Ok(Response::ok())
+}
+
 async fn query(State(app): State<Arc<RwLock<App>>>,Json(query): Json<String>) -> Result<Json<String>, AppError> {
     //Release lock befor query
     let db = {
@@ -192,6 +201,7 @@ pub fn init(app:Arc<RwLock<App>>) -> Router {
         .route("/start", post(start))
         .route("/stop", post(stop))
         .route("/pause", post(pause))
+        .route("/close", post(close))
         .route("/reset_stats", post(reset_stats))
         .route("/config", put(set_config))
         .route("/log-level", put(set_log_level));

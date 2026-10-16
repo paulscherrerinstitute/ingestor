@@ -211,7 +211,7 @@ impl ChannelProcessor {
         ret
     }
 
-    pub async fn on_timer(&self) -> IOResult<()> {
+    pub async fn on_timer(&self, minute_changed: bool, hour_changed: bool, day_changed: bool) -> IOResult<()> {
         if self.arguments.metadata_processing != MetadataProcessing::Sync {
             let  failed_metadata_records = self.failed_metadata_records.read().await.clone();
             if !failed_metadata_records.is_empty() {

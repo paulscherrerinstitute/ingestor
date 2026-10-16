@@ -145,15 +145,13 @@ impl Ingestor {
         Ok(())
     }
 
-    pub async fn on_timer(&self) -> IOResult<()> {
-        Ok(())
-    }
-
-    pub async fn on_day_change(&self) -> IOResult<()> {
-        if !self.arguments.metadata_on_changed {
-            log::info!("On-day change event: updating the channel metadata entries");
-            //Make sure metadata table is updated every day
-            self.channel_metadata.write().await.clear();
+    pub async fn on_timer(&self, minute_changed: bool, hour_changed: bool, day_changed: bool) -> IOResult<()> {
+        if day_changed {
+            if !self.arguments.metadata_on_changed {
+                log::info!("On-day change event: updating the channel metadata entries");
+                //Make sure metadata table is updated every day
+                self.channel_metadata.write().await.clear();
+            }
         }
         Ok(())
     }

@@ -314,7 +314,7 @@ impl Processor {
         self.channel_processor.metadata_stats.dropped.store(0, Ordering::Relaxed);
     }
 
-    pub async fn on_timer(&self) -> IOResult<()> {
+    pub async fn on_timer(&self, minute_changed: bool, hour_changed: bool, day_changed: bool) -> IOResult<()> {
         Ok(())
     }
 }

@@ -21,12 +21,14 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 
-#[macro_export]
-macro_rules! exit {
-    ($($arg:tt)*) => {{
-        eprintln!($($arg)*);
-        std::process::exit(1);
-    }};
+pub fn exit(erro_msg: Option<String>) -> ! {
+    match erro_msg {
+        Some(msg) => {
+            eprintln!("{msg}");
+            std::process::exit(1);
+        }
+        None => std::process::exit(0),
+    }
 }
 
 #[tokio::main]

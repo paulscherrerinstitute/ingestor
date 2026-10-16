@@ -59,8 +59,9 @@ impl EngineClient {
         self.send_command(|response| EngineCommand::Status { response }).await
     }
 
-    pub async fn on_timer(&self) -> IOResult<()> {
-        self.send_command(|response| EngineCommand::Timer { response }).await
+    pub async fn on_timer(&self, minute_changed: bool, hour_changed: bool, day_changed: bool) -> IOResult<()> {
+        self.send_command(|response| EngineCommand::Timer {
+            minute_changed, hour_changed, day_changed, response}).await
     }
 
 }
