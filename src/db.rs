@@ -14,6 +14,7 @@ use scylla::statement::prepared::PreparedStatement;
 use scylla::deserialize::row::DeserializeRow;
 use tokio::sync::{OnceCell, RwLock};
 use std::sync::OnceLock;
+use futures::task::Spawn;
 use scylla::_macro_internal::SerializeRow;
 use crate::arguments::StorageLayout;
 use crate::codec::{decode_optional, encode_to_i64, kind_to_dtype};
@@ -52,6 +53,11 @@ pub struct ChannelMetadata {
     pub element_count: i32,
 }
 
+#[derive(Serialize)]
+pub struct DatabaseStatus {
+    initialized: bool,
+    enabled: bool,
+}
 
 pub struct DB {
     arguments: Arc<Arguments>,
@@ -204,6 +210,13 @@ impl DB {
             self.session.get()
         } else {
             None
+        }
+    }
+
+    pub fn status(&self) -> DatabaseStatus {
+        DatabaseStatus {
+            initialized: self.session.get().is_some(),
+            enabled: self.is_enabled(),
         }
     }
 

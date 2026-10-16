@@ -1,7 +1,7 @@
 use crate::channel_processor::ChannelProcessor;
 use crate::config::Config;
-use crate::db::{ScyllaMetrics, DB};
-use crate::engine::Engine;
+use crate::db::{ScyllaMetrics, DB, DatabaseStatus};
+use crate::engine::{Engine, Stats};
 use crate::engine_client::EngineClient;
 use crate::ingestor::Ingestor;
 use crate::processor::{Processor, SourceInfo};
@@ -16,7 +16,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use chrono::Timelike;
+use chrono::{DateTime, Local, Timelike};
 use scylla::response::query_result::QueryResult;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::task::JoinHandle;
@@ -36,46 +36,11 @@ pub enum State {
 
 #[derive(Serialize)]
 pub struct Status {
-    endpoints: HashMap<String, EndpointState>
+    state: State,
+    endpoints: HashMap<String, EndpointState>,
+    database: DatabaseStatus,
+    uptime_seconds: u32,
 }
-
-impl Status {
-    pub fn new(endpoints: HashMap<String, EndpointState>) -> Self {
-        Self{endpoints}
-    }
-}
-
-#[derive(Serialize)]
-pub struct Stats {
-    pub received: u32,
-    pub errors: u32,
-    pub dropped: u32,
-    pub processing: u32,
-    pub max_processing: u32,
-    pub processed: u32,
-    pub pending: u32,
-    pub channel_dropped:u32,
-    pub max_pending: u32,
-    pub treated: u32,
-    pub metadata_pending: u32,
-    pub metadata_dropped: u32,
-    pub metadata_treated: u32,
-    pub received_rate: f32,
-    pub errors_rate: f32,
-    pub dropped_rate: f32,
-    pub processed_rate: f32,
-    pub treated_rate: f32,
-    pub channel_dropped_rate: f32,
-    pub duplicated_sources: u32,
-    pub disabled_sources: u32,
-    pub connected_sources: u32,
-    pub connecting_sources: u32,
-    pub disconnected_sources: u32,
-    pub cpu:f32,
-    pub memory:u64,
-    pub files:usize,
-}
-
 
 pub struct App {
     arguments:Arc<Arguments>,
@@ -87,6 +52,7 @@ pub struct App {
     channel_processor: Arc<ChannelProcessor>,
     ingestor: Arc<Ingestor>,
     db: Arc<DB>,
+    startup: DateTime<Local>,
 }
 
 
@@ -108,8 +74,9 @@ impl App {
         let (engine_client, engine_rx) = EngineClient::new();
         let channel_processor = Arc::new(ChannelProcessor::new(arguments.clone(), ingestor.clone()));
         let processor = Arc::new(Processor::new(arguments.clone(), channel_processor.clone()));
+        let startup =  chrono::Local::now();
         Engine::launch(arguments.clone(), engine_rx, handle.clone(), processor.clone());
-        App {arguments, config, engine_client, processor, channel_processor, db, ingestor, state:State::Stopped, timer_handle: None}
+        App {arguments, config, engine_client, processor, channel_processor, db, ingestor, state:State::Stopped, timer_handle: None, startup}
     }
 
     fn assertState(&self, state:State) -> IOResult<()> {
@@ -127,22 +94,7 @@ impl App {
             Ok(())
         }
     }
-
-    pub fn process_resources() -> (f32, u64, usize) {
-        let mut system = System::new();
-        let pid = Pid::from_u32(std::process::id());
-        system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-        if let Some(process) = system.process(pid) {
-            let open_files = system
-                .process(pid)
-                .and_then(|process| process.open_files())
-                .unwrap_or(0);
-            (process.cpu_usage(), process.memory(), open_files)
-        } else {
-            (0.0, 0, 0)
-        }
-    }
-
+    
     pub async fn set_config(&mut self, config: Config) -> IOResult<()> {
         self.config = config;
         if let Err(e) = self.config.save(&self.arguments.config_path) {
@@ -293,7 +245,13 @@ impl App {
     }
 
 
-    pub async fn status(&self) ->  IOResult<Status>  { self.engine_client.status().await }
+    pub async fn status(&self) ->  IOResult<Status>  {
+        let endpoints = self.engine_client.endpoints().await?;
+        let database = self.db.status();
+        let uptime_seconds =  (Local::now() - self.startup).as_seconds_f32() as u32;;
+        let state = self.state(); 
+        Ok(Status{state, endpoints, database, uptime_seconds})
+    }
 
     pub async fn stats(&self) -> IOResult<Stats> {
         self.engine_client.stats().await

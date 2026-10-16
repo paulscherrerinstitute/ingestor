@@ -1,8 +1,7 @@
-use crate::app::{Stats, Status};
 use crate::config::Config;
-use crate::engine::EngineCommand;
+use crate::engine::{EngineCommand, Stats};
 use crate::engine;
-use bsread::{EndpointDiag, IOError, IOResult};
+use bsread::{EndpointDiag, EndpointState, IOError, IOResult};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
@@ -55,8 +54,8 @@ impl EngineClient {
         self.send_command(|response| EngineCommand::ResetHeaders { response }).await
     }
 
-    pub async fn status(&self) ->  IOResult<Status> {
-        self.send_command(|response| EngineCommand::Status { response }).await
+    pub async fn endpoints(&self) ->  IOResult<HashMap<String, EndpointState>> {
+        self.send_command(|response| EngineCommand::Endpoints { response }).await
     }
 
     pub async fn on_timer(&self, minute_changed: bool, hour_changed: bool, day_changed: bool) -> IOResult<()> {

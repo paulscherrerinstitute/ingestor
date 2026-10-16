@@ -9,9 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering, AtomicUsize};
 use std::sync::{RwLock};
 use tokio::runtime::Handle;
-use tokio::sync::mpsc::channel;
 use crate::arguments::{ChannelProcessing, MetadataProcessing};
-use crate::ingestor::ChannelMetadata;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChannelInfo{

@@ -1,4 +1,4 @@
-use crate::app::{App, Stats, Status};
+use crate::app::{App, Status};
 use crate::config::Config;
 use crate::db::ScyllaMetrics;
 use crate::processor::SourceInfo;
@@ -12,6 +12,7 @@ use std::io::ErrorKind;
 use std::sync::Arc;
 use scylla::response::query_result::QueryResult;
 use tokio::sync::RwLock;
+use crate::engine::Stats;
 
 const API_PREFIX: &str = "/api";
 

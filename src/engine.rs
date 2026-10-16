@@ -1,19 +1,50 @@
 use crate::Arguments;
-use crate::app::{App, Stats, Status};
 use crate::config::{Config, Source};
 use crate::processor::Processor;
 use bsread::receiver::{AsyncExecution, MessageStats};
 use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOResult, Pool, ReceivedMessage, SocketConfig, SocketType};
-use crossbeam_channel;
 use std::collections::{HashMap, HashSet};
 use std::cmp::max;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::Instant;
+use serde::Serialize;
+use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::Receiver;
-use crate::arguments::{ChannelProcessing, MessageProcessing, StorageLayout};
+use crate::arguments::{MessageProcessing, StorageLayout};
+
+#[derive(Serialize)]
+pub struct Stats {
+    pub received: u32,
+    pub errors: u32,
+    pub dropped: u32,
+    pub processing: u32,
+    pub max_processing: u32,
+    pub processed: u32,
+    pub pending: u32,
+    pub channel_dropped:u32,
+    pub max_pending: u32,
+    pub treated: u32,
+    pub metadata_pending: u32,
+    pub metadata_dropped: u32,
+    pub metadata_treated: u32,
+    pub received_rate: f32,
+    pub errors_rate: f32,
+    pub dropped_rate: f32,
+    pub processed_rate: f32,
+    pub treated_rate: f32,
+    pub channel_dropped_rate: f32,
+    pub duplicated_sources: u32,
+    pub disabled_sources: u32,
+    pub connected_sources: u32,
+    pub connecting_sources: u32,
+    pub disconnected_sources: u32,
+    pub cpu:f32,
+    pub memory:u64,
+    pub files:usize,
+}
 
 pub enum EngineCommand {
     Start {
@@ -35,8 +66,8 @@ pub enum EngineCommand {
     Diags {
         response: tokio::sync::oneshot::Sender<IOResult<(HashMap<String, HashMap<EndpointDiag, u32>>)>>,
     },
-    Status {
-        response: tokio::sync::oneshot::Sender<IOResult<(Status)>>,
+    Endpoints {
+        response: tokio::sync::oneshot::Sender<IOResult<(HashMap<String, EndpointState>)>>,
     },
     Stats {
         response: tokio::sync::oneshot::Sender<IOResult<(Stats)>>,
@@ -123,8 +154,8 @@ impl Engine {
                         let _ = response.send(Ok(engine.diags()));
                     }
 
-                    EngineCommand::Status { response } => {
-                        let _ = response.send(Ok(engine.status()));
+                    EngineCommand::Endpoints { response } => {
+                        let _ = response.send(Ok(engine.endpoints()));
                     }
 
                     EngineCommand::Stats { response } => {
@@ -405,16 +436,16 @@ impl Engine {
         diagnostics
     }
 
-    pub fn status(& self) -> Status {
+    pub fn endpoints(& self) -> HashMap<String, EndpointState> {
         let mut endpoint_states = HashMap::new();
         for pool in self.pools.iter() {
             endpoint_states.extend(pool.endpoint_states());
         }
-        Status::new(endpoint_states)
+        endpoint_states
     }
 
     pub fn stats(& self) -> Stats {
-        let (cpu, memory, files) = App::process_resources();
+        let (cpu, memory, files) = Self::process_resources();
 
         let sources_stats = self.source_stats();
         let message_stats = self.message_stats();
@@ -526,6 +557,20 @@ impl Engine {
         self.processing_stats.processed.load(Ordering::Relaxed)
     }
 
+    pub fn process_resources() -> (f32, u64, usize) {
+        let mut system = System::new();
+        let pid = Pid::from_u32(std::process::id());
+        system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        if let Some(process) = system.process(pid) {
+            let open_files = system
+                .process(pid)
+                .and_then(|process| process.open_files())
+                .unwrap_or(0);
+            (process.cpu_usage(), process.memory(), open_files)
+        } else {
+            (0.0, 0, 0)
+        }
+    }
 
     //Every 10s
     pub fn on_timer(&mut self, minute_changed: bool, hour_changed: bool, day_changed: bool)  {
