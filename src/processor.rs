@@ -35,9 +35,9 @@ impl SourceInfo {
 }
 
 pub struct ProcessorStats {
-    pending: AtomicU32,
-    treated: AtomicU32,
-    dropped: AtomicU32,
+    pub pending: AtomicU32,
+    pub treated: AtomicU32,
+    pub dropped: AtomicU32,
 }
 
 struct ChannelMessage{
@@ -66,20 +66,17 @@ pub enum MetadataCommand {
 
 impl Processor {
     pub fn new(arguments:Arc<Arguments>, channel_processor: Arc<ChannelProcessor>) -> Self {
-        Self {
-            arguments,
-            sources_info: Arc::new(RwLock::new(HashMap::new())),
-            channel_processor,
-            stats: Arc::new(ProcessorStats{pending:AtomicU32::new(0), treated:AtomicU32::new(0), dropped:AtomicU32::new(0)}),
-            channel_buffers:Arc::new(RwLock::new(HashMap::new()))
-        }
+        let sources_info = Arc::new(RwLock::new(HashMap::new()));
+        let stats = Arc::new(ProcessorStats {pending:AtomicU32::new(0), treated:AtomicU32::new(0), dropped:AtomicU32::new(0)});
+        let channel_buffers =Arc::new(RwLock::new(HashMap::new()));
+        Self {arguments, sources_info, channel_processor, stats,channel_buffers}
     }
 
     pub async fn process(&self, endpoint: Option<String>, message: Message){
         if let Err(err) = self.check_msg(&endpoint, &message){
             log::debug!("Message check failed: {}", err);
         } else {
-            if message.header_changed() && self.arguments.metadata_processing != MetadataProcessing::Sync {
+            if message.header_changed()  {
                 let id = message.id();
                 let handle = Handle::current();
                 for channel in message.channels() {
@@ -154,7 +151,7 @@ impl Processor {
                         let stats = Arc::clone(&self.stats);
                         let channel_processor = Arc::clone(&self.channel_processor);
 
-                        if header_changed && self.arguments.metadata_processing != MetadataProcessing::Sync {
+                        if header_changed  {
                             self.channel_processor.process_metadata(config.name(), id, config.kind(),config.elements(), handle);
                         }
 
@@ -298,6 +295,12 @@ impl Processor {
         self.stats.dropped.load(Ordering::Relaxed)
     }
 
+    pub fn metadata_pending(&self) -> u32 {self.channel_processor.metadata_stats.pending.load(Ordering::Relaxed)}
+
+    pub fn metadata_treated(&self) -> u32 {self.channel_processor.metadata_stats.treated.load(Ordering::Relaxed)}
+
+    pub fn metadata_dropped(&self) -> u32 {self.channel_processor.metadata_stats.dropped.load(Ordering::Relaxed)}
+
     pub fn channel_buffers(&self) -> u32 {
         self.channel_buffers.read().unwrap().len() as u32
     }
@@ -306,6 +309,9 @@ impl Processor {
         self.stats.treated.store(0, Ordering::Relaxed);
         self.stats.pending.store(0, Ordering::Relaxed);
         self.stats.dropped.store(0, Ordering::Relaxed);
+        self.channel_processor.metadata_stats.treated.store(0, Ordering::Relaxed);
+        self.channel_processor.metadata_stats.pending.store(0, Ordering::Relaxed);
+        self.channel_processor.metadata_stats.dropped.store(0, Ordering::Relaxed);
     }
 
     pub async fn on_timer(&self) -> IOResult<()> {

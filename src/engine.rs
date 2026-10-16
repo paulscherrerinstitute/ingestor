@@ -429,6 +429,9 @@ impl Engine {
         let pending = self.processor.pending();
         let treated = self.processor.treated();
         let channel_dropped = self.processor.dropped();
+        let metadata_pending = self.processor.metadata_pending();
+        let metadata_treated = self.processor.metadata_treated();
+        let metadata_dropped = self.processor.metadata_dropped();
         let processing = self.processing();
         let processed = self.processed();
         Stats {
@@ -438,8 +441,11 @@ impl Engine {
             processing,
             processed,
             pending,
-            treated: treated,
+            treated,
             channel_dropped,
+            metadata_pending,
+            metadata_treated,
+            metadata_dropped,
             duplicated_sources: self.processing_stats.duplicated_sources.load(Ordering::Relaxed),
             disabled_sources: self.processing_stats.disabled_sources.load(Ordering::Relaxed),
             connected_sources:sources_stats.connected, connecting_sources:sources_stats.connecting, disconnected_sources:sources_stats.disconnected,
@@ -539,6 +545,10 @@ impl Engine {
         let pending = self.processor.pending();
         let treated = self.processor.treated();
         let channel_dropped = self.processor.dropped();
+        let metadata_pending = self.processor.metadata_pending();
+        let metadata_treated = self.processor.metadata_treated();
+        let metadata_dropped = self.processor.metadata_dropped();
+        
 
         let (received_rate, errors_rate, dropped_rate, processed_rate, treated_rate, channel_dropped_rate, max_pending, max_processing) = if let Some(last_stats) = self.last_stats.as_ref() {
             let new_received = if received < last_stats.received{received} else {received - last_stats.received};
@@ -558,6 +568,7 @@ impl Engine {
             received,errors, dropped, processing, processed,channel_dropped,
             received_rate, errors_rate, dropped_rate, processed_rate, treated_rate, channel_dropped_rate,
             max_pending, max_processing, pending, treated,
+            metadata_pending, metadata_treated, metadata_dropped, 
             duplicated_sources:0, disabled_sources:0,
             connected_sources:0, connecting_sources: 0, disconnected_sources: 0,
             cpu:0.0, memory:0, files:0

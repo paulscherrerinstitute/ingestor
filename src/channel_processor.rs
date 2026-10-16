@@ -9,11 +9,12 @@ use std::fs::OpenOptions;
 use std::io::{self, Write, ErrorKind};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock, atomic::{AtomicU64, Ordering}};
+use std::sync::atomic::AtomicU32;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::OnceCell;
 use crate::arguments::{ MetadataProcessing};
-use crate::processor::MetadataCommand;
+use crate::processor::{MetadataCommand, ProcessorStats};
 
 struct ChannelError {
     kind: ErrorKind,
@@ -27,6 +28,7 @@ pub struct ChannelProcessor {
     metadata_errors: Arc<AtomicU64>,
     metadata_sender: OnceCell<Sender<MetadataCommand>>,
     failed_metadata_records: Arc<tokio::sync::RwLock<Vec<ChannelMetadata>>>,
+    pub metadata_stats: Arc<ProcessorStats>,
 }
 
 const METADATA_ERRORS_NAME: &str = "_metadata_";
@@ -40,9 +42,13 @@ impl ChannelProcessor {
              channel_errors:RwLock::new(HashMap::new()),
              metadata_errors: Arc::new(AtomicU64::new(0)),
              metadata_sender: OnceCell::new(),
-             failed_metadata_records
-        }
+             failed_metadata_records,
+             metadata_stats:  Arc::new(ProcessorStats{pending:AtomicU32::new(0), treated:AtomicU32::new(0), dropped:AtomicU32::new(0)}),
     }
+    }
+
+
+
 
     pub async fn process_data(&self, id: u64, tm: (u64, u64), config: ChannelConfig, data: Option<Vec<u8>>, header_changed: bool) {
         if self.arguments.debug {
@@ -58,7 +64,13 @@ impl ChannelProcessor {
 
         let (name, kind, shape, elements) = config.into_parts();
         if header_changed && self.arguments.metadata_processing == MetadataProcessing::Sync {
-            let _ = Self::append_metadata(&self.ingestor, &self.metadata_errors, &name, id, kind, elements).await; //No retrying in sync mode 
+            self.metadata_stats.pending.fetch_add(1, Ordering::Relaxed);
+            if Self::append_metadata(&self.ingestor, &self.metadata_errors, &self.metadata_stats,
+                                          &name, id, kind, elements).await.is_err() {
+                //No retrying in sync mode
+                self.metadata_stats.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+
         }
         let result = self.ingestor.append_record(&name,kind, &shape, elements, id, tm, data).await;
         self.check_append_result(id, &name, result);
@@ -117,16 +129,20 @@ impl ChannelProcessor {
     pub fn process_metadata(&self, name:String, id:u64, kind:ScalarType, elements:usize, handle: &Handle) -> bool {
         match self.arguments.metadata_processing {
             MetadataProcessing::Sync => {
+                //Appended in process_data
+                return false;
             }
             MetadataProcessing::Async => {
                 let ingestor = self.ingestor.clone();
                 let metadata_errors = self.metadata_errors.clone();
                 let failed_metadata_records = self.failed_metadata_records.clone();
+                let metadata_stats = self.metadata_stats.clone();
                 handle.spawn(async move {
-                    if let Err(e) = Self::append_metadata(&ingestor, &metadata_errors, &name,  id, kind, elements).await {
+                    if let Err(e) = Self::append_metadata(&ingestor, &metadata_errors, &metadata_stats, &name,  id, kind, elements).await {
                         failed_metadata_records.write().await.push(ChannelMetadata{name: Some(name.to_string()),from: id, kind, count: elements});
                     }
                 });
+                self.metadata_stats.pending.fetch_add(1, Ordering::Relaxed);
             }
             MetadataProcessing::Buffered => {
                 if !self.metadata_sender.initialized(){
@@ -134,11 +150,12 @@ impl ChannelProcessor {
                     let ingestor = self.ingestor.clone();
                     let metadata_errors = self.metadata_errors.clone();
                     let failed_metadata_records = self.failed_metadata_records.clone();
+                    let metadata_stats = self.metadata_stats.clone();
                     handle.spawn(async move {
                         while let Some(msg) = metadata_receiver.recv().await {
                             match msg {
                                 MetadataCommand::Insert { name, id, kind, elements } => {
-                                    if let Err(e) = Self::append_metadata(&ingestor, &metadata_errors, &name, id, kind, elements).await{
+                                    if let Err(e) = Self::append_metadata(&ingestor, &metadata_errors,&metadata_stats, &name, id, kind, elements).await{
                                         failed_metadata_records.write().await.push(ChannelMetadata{name: Some(name.to_string()),from: id, kind, count: elements});
                                     }
                                 }
@@ -150,11 +167,13 @@ impl ChannelProcessor {
 
                 match self.metadata_sender.get().unwrap().try_send(MetadataCommand::Insert { name, id, kind, elements }) {
                     Ok(()) => {
+                        self.metadata_stats.pending.fetch_add(1, Ordering::Relaxed);
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
                         match(msg){
                             MetadataCommand::Insert {name,  id, kind, elements} => {
                                 log::warn!("Dropping  metadata insert command {}-{}-{}-{} : metadata queue is full", &name,  id, kind, elements);
+                                self.metadata_stats.dropped.fetch_add(1, Ordering::Relaxed);
                             }
                         }
                         return false
@@ -169,8 +188,9 @@ impl ChannelProcessor {
         true
     }
 
-    async fn append_metadata(ingestor:&Arc<Ingestor>, metadata_errors: &Arc<AtomicU64>, name:&str,  id: u64, kind:ScalarType, elements:usize) -> IOResult<()> {
-        match ingestor.append_metadata(name, kind, elements, id).await {
+    async fn append_metadata(ingestor:&Arc<Ingestor>, metadata_errors: &Arc<AtomicU64>, metadata_stats:&Arc<ProcessorStats>,
+                             name:&str,  id: u64, kind:ScalarType, elements:usize) -> IOResult<()> {
+        let ret = match ingestor.append_metadata(name, kind, elements, id).await {
             Ok(_) => {
                 let failures =metadata_errors.swap(0, Ordering::Relaxed);
                 if failures > 0 {
@@ -185,7 +205,10 @@ impl ChannelProcessor {
                 }
                 Err(e)
             }
-        }
+        };
+        metadata_stats.pending.fetch_sub(1, Ordering::Relaxed);
+        metadata_stats.treated.fetch_add(1, Ordering::Relaxed);
+        ret
     }
 
     pub async fn on_timer(&self) -> IOResult<()> {
@@ -204,7 +227,5 @@ impl ChannelProcessor {
         }
         Ok(())
     }
-
-
 
 }
