@@ -1,6 +1,5 @@
-use std::collections::HashMap;
 use crate::{Arguments, app, cql};
-use bsread::{channel, IOError, IOResult, ScalarType, ChannelConfig};
+use bsread::{IOError, IOResult, ScalarType, ChannelConfig};
 use scylla::client::session::Session;
 use scylla::client::session_builder::SessionBuilder;
 use scylla::observability::metrics::Metrics;
@@ -8,18 +7,14 @@ use serde::Serialize;
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use scylla::errors::MetadataError::Keyspaces;
 use scylla::response::query_result::QueryResult;
 use scylla::statement::prepared::PreparedStatement;
 use scylla::deserialize::row::DeserializeRow;
 use tokio::sync::{OnceCell, RwLock};
 use std::sync::OnceLock;
-use futures::task::Spawn;
 use scylla::_macro_internal::SerializeRow;
 use crate::arguments::StorageLayout;
 use crate::codec::{decode_optional, encode_to_i64, kind_to_dtype};
-use crate::cql::COLUMN_CHANNEL;
-use crate::ingestor::get_table_name;
 
 #[derive(scylla::DeserializeRow)]
 struct TableName {
@@ -57,17 +52,18 @@ pub struct ChannelMetadata {
 pub struct DatabaseStatus {
     initialized: bool,
     enabled: bool,
+    connected: bool,
 }
 
 pub struct DB {
     arguments: Arc<Arguments>,
     session: OnceCell<Session>,
+    connected: AtomicBool,
     enabled: AtomicBool,
 }
 
-const SHARED_TABLE_NAME:&str = "data";
-
 const KEYSPACE_DEFAULT:&str = "beam_data";
+
 
 
 static KEYSPACE: OnceLock<String> = OnceLock::new();
@@ -79,7 +75,7 @@ impl DB {
             _ => {format! ("db_{:?}", arguments.storage_layout).to_lowercase()}
         };
         KEYSPACE.set(keyspace.to_string()).expect("KEYSPACE has already been initialized");
-        Self { arguments, session: OnceCell::new(), enabled: AtomicBool::new(false) }
+        Self { arguments, session: OnceCell::new(), enabled: AtomicBool::new(false) , connected: AtomicBool::new(false) }
     }
 
     pub fn keyspace() -> &'static String {
@@ -178,6 +174,7 @@ impl DB {
         self.enabled.load(Ordering::Relaxed)
     }
 
+
     pub async fn connect(&self) -> IOResult<()> {
         //loop {
         if self.is_connected() {
@@ -193,8 +190,6 @@ impl DB {
                 Err(e)
             }
         }
-        //tokio::time::sleep(Duration::from_millis(5000)).await;
-        //}
     }
 
     pub fn is_connected(&self) -> bool {
@@ -217,6 +212,7 @@ impl DB {
         DatabaseStatus {
             initialized: self.session.get().is_some(),
             enabled: self.is_enabled(),
+            connected: self.connected.load(Ordering::Relaxed),
         }
     }
 
@@ -445,7 +441,11 @@ impl DB {
         self.execute_statement(statement, name, (name, from, dtype, count as i32)).await
     }
 
-
+    pub async fn on_timer(&self, minute_changed: bool, hour_changed: bool, day_changed: bool) -> IOResult<()> {
+        let connected = self.query("SELECT now() FROM system.local").await.is_ok();
+        self.connected.store(connected, Ordering::Relaxed);
+        Ok(())
+    }
 
     pub fn metrics(&self) -> Option<ScyllaMetrics>{
         Some(ScyllaMetrics::from_metrics(self.session()?.get_metrics()))
