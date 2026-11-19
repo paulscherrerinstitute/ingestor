@@ -132,13 +132,13 @@ impl Arguments {
             Some(file) => {file}
         };
 
-        let mut arguments = match Arguments::read(args_file) {
+        let mut arguments = match Arguments::read(&args_file) {
             Ok(arguments) => {
-                log::info!("Loaded arguments from: {}", ARGUMENTS_FILE_PATH);
+                log::info!("Loaded arguments from: {}", args_file.display());
                 arguments
             }
             Err(e) => {
-               log::info!("Error loading arguments from {}: {}", ARGUMENTS_FILE_PATH, e);
+               log::info!("Error loading arguments from {}: {}", args_file.display(), e);
                 Arguments::default()
             }
         };
@@ -206,7 +206,7 @@ pub struct Cli {
     #[arg(long, help = "Data output path")]
     pub output_path: Option<PathBuf>,
     
-    #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "false", help = "Insert channel metadata only when persisted value changes")]
+    #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Insert channel metadata only when persisted value changes")]
     pub metadata_on_changed: Option<bool>,
 
     #[arg(long, help = "Metadata queue size, if metadata writing is not synchronous")]

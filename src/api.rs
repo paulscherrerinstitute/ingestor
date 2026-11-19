@@ -144,12 +144,20 @@ async fn close(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Response>, Ap
     Ok(Response::ok())
 }
 
+
 async fn query(State(app): State<Arc<RwLock<App>>>,Json(query): Json<String>) -> Result<Json<String>, AppError> {
-    //Release lock befor query
+    //Release lock before query
     let db = {
        app.read().await.db().clone()
     };
-    Ok(Json(format!("{:?}", db.query(&query).await?)))
+
+    #[cfg(test)]
+    let result = Ok(Json(format!("{:?}", db.query(&query).await?)));
+
+    #[cfg(not(test))]
+    let result = Err(AppError::Internal(ErrorKind::Unsupported.to_string(),"Invalid API call".to_string(),));
+
+    result
 }
 
 async fn tables(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Vec<String>>, AppError> {

@@ -177,13 +177,14 @@ impl DB {
 
     pub async fn connect(&self) -> IOResult<()> {
         //loop {
-        if self.is_connected() {
+        if self.is_initialized() {
             return Ok(());
         }
         match Self::create_session(&self.arguments).await {
             Ok(session) => {
                 self.session.set(session)
                     .map_err(|e| { IOError::new(ErrorKind::ConnectionRefused, format!("Error creating session: {}", e)) })?;
+                self.update_connected().await;
                 Ok(())
             }
             Err(e) => {
@@ -192,8 +193,12 @@ impl DB {
         }
     }
 
-    pub fn is_connected(&self) -> bool {
+    pub fn is_initialized(&self) -> bool {
         self.session.get().is_some()
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::Relaxed)
     }
 
     pub fn session(&self) -> Option<&Session> {
@@ -210,9 +215,9 @@ impl DB {
 
     pub fn status(&self) -> DatabaseStatus {
         DatabaseStatus {
-            initialized: self.session.get().is_some(),
+            initialized: self.is_initialized(),
             enabled: self.is_enabled(),
-            connected: self.connected.load(Ordering::Relaxed),
+            connected: self.is_connected()
         }
     }
 
@@ -262,11 +267,18 @@ impl DB {
     pub async fn create_channel_metadata_insert_statement(&self, table_name: &str) -> IOResult<PreparedStatement> {
         let query =  cql::insert_channel_metadata_query(table_name);
         let mut statement = self.get_session()?.prepare(query).await
-            .map_err(|e| {IOError::other(format!("Error preparing insert for table {}: {}", table_name, e))})?;
+            .map_err(|e| {IOError::other(format!("Error preparing metadata insert for table {}: {}", table_name, e))})?;
         statement.set_is_idempotent(true);
         Ok(statement)
     }
 
+    pub async fn create_channel_metadata_fetch_statement(&self,table_name: &str) -> IOResult<PreparedStatement> {
+        let query =  cql::fetch_channel_metadata_query(table_name);
+        let mut statement = self.get_session()?.prepare(query).await
+            .map_err(|e| {IOError::other(format!("Error preparing metadata fetch for table {}: {}", table_name, e))})?;
+        statement.set_is_idempotent(true);
+        Ok(statement)
+    }
 
     pub async fn insert_with_type(&self, table_name: &str, name: &str, values: impl SerializeRow,) -> IOResult<()> { ;
         let query = cql::insert_data_query(&table_name, true);
@@ -281,27 +293,17 @@ impl DB {
             map_err(|e| { IOError::other( format!("Error appending {}: {}", name, e)) })?;
         Ok(())
     }
-    pub async fn execute_statement(&self, statement: &PreparedStatement, name: &str, values: impl SerializeRow,) -> IOResult<()> {
-        self.get_session()?.execute_unpaged( &statement,values,)
+    pub async fn execute_statement(&self, statement: &PreparedStatement, values: impl SerializeRow,) -> IOResult<QueryResult> {
+        let result = self.get_session()?.execute_unpaged( &statement,values,)
             .await
-            .map_err(|e| { IOError::other(format!("Error appending {}: {}", name, e),)})?;
-        Ok(())
+            .map_err(|e| { IOError::other(format!("Error executing {}: {}", statement.get_statement(), e),)})?;
+        Ok(result)
     }
 
     pub async fn fetch_channels(&self,table: &str,) -> IOResult<Vec<String>> {
         let rows = self.query_rows::<ChannelName>(&cql::fetch_channels_query(table),).await?;
         Ok(rows.into_iter().map(|r| r.channel_name).collect())
     }
-
-    pub async fn fetch_channel_metadata(&self,table: &str, channel: &str) -> IOResult<ChannelMetadata> {
-        let mut rows = self.query_rows::<ChannelMetadata>(&cql::fetch_channel_metadata_query(table, channel),).await?;
-        if rows.is_empty() {
-            Err(IOError::other(format!("Channel not found: {}-{}", table, channel)))
-        } else {
-            Ok(rows.remove(0))
-        }
-    }
-
 
     pub async fn insert_blob(&self, table_name: &str, name: &str, kind: ScalarType, bucket: i64, id: i64, data:Option<Vec<u8>>) -> IOResult<()> {
         let dtype = kind_to_dtype(kind);
@@ -370,80 +372,96 @@ impl DB {
         }
     }
 
-    pub async fn execute_statement_blob(&self, statement: &PreparedStatement, name: &str, kind: ScalarType, bucket: i64, id: i64, data: Option<Vec<u8>>) -> IOResult<()> {
+    pub async fn execute_statement_blob(&self, statement: &PreparedStatement, name: &str, kind: ScalarType, bucket: i64, id: i64, data: Option<Vec<u8>>) -> IOResult<(QueryResult)> {
         let dtype = kind_to_dtype(kind);
-        self.execute_statement(statement, name, (name, bucket, id, data, dtype)).await
+        self.execute_statement(statement, (name, bucket, id, data, dtype)).await
     }
 
-    pub async fn execute_statement_i64(&self, statement: &PreparedStatement, name: &str, kind: ScalarType,bucket: i64,  id: i64, data: Option<Vec<u8>>) -> IOResult<()> {
+    pub async fn execute_statement_i64(&self, statement: &PreparedStatement, name: &str, kind: ScalarType,bucket: i64,  id: i64, data: Option<Vec<u8>>) -> IOResult<(QueryResult)> {
         let data = encode_to_i64(kind, data)?;
         let dtype = kind_to_dtype(kind);
-        self.execute_statement(statement, name, (name, bucket, id, data, dtype)).await
+        self.execute_statement(statement, (name, bucket, id, data, dtype)).await
     }
 
-    pub async fn execute_statement_typed(&self,statement: &PreparedStatement,name: &str,kind: ScalarType, bucket: i64, id: i64, data: Option<Vec<u8>>,) -> IOResult<()> {
+    pub async fn execute_statement_typed(&self,statement: &PreparedStatement,name: &str,kind: ScalarType, bucket: i64, id: i64, data: Option<Vec<u8>>,) -> IOResult<(QueryResult)> {
         match kind {
             ScalarType::string => {
                 let value = data
                     .map(String::from_utf8)
                     .transpose()
                     .map_err(|e| IOError::new(ErrorKind::InvalidData, e))?;
-                self.execute_statement(statement, name, (name, bucket, id, value)).await
+                self.execute_statement(statement, (name, bucket, id, value)).await
             }
             ScalarType::bool => {
                 let value = decode_optional(data, |b: [u8; 1]| b[0] != 0)?;
-                self.execute_statement(statement, name, (name, bucket, id, value)).await
+                self.execute_statement(statement, (name, bucket, id, value)).await
             }
             ScalarType::int8 => {
                 let value = decode_optional(data, i8::from_le_bytes)?;
-                self.execute_statement(statement, name, (name, bucket, id, value)).await
+                self.execute_statement(statement, (name, bucket, id, value)).await
             }
             ScalarType::uint8 => {
                 let value = decode_optional(data, u8::from_le_bytes)?.map(i16::from);
-                self.execute_statement(statement, name, (name, bucket, id, value)).await
+                self.execute_statement(statement, (name, bucket, id, value)).await
             }
             ScalarType::int16 => {
                 let value = decode_optional(data, i16::from_le_bytes)?;
-                self.execute_statement(statement, name, (name, bucket, id, value)).await
+                self.execute_statement(statement, (name, bucket, id, value)).await
             }
             ScalarType::uint16 => {
                 let value = decode_optional(data, u16::from_le_bytes)?.map(i32::from);
-                self.execute_statement(statement, name, (name, bucket, id, value)).await
+                self.execute_statement(statement, (name, bucket, id, value)).await
             }
             ScalarType::int32 => {
                 let value = decode_optional(data, i32::from_le_bytes)?;
-                self.execute_statement(statement, name, (name, bucket, id, value)).await
+                self.execute_statement(statement, (name, bucket, id, value)).await
             }
             ScalarType::uint32 => {
                 let value = decode_optional(data, u32::from_le_bytes)?.map(i64::from);
-                self.execute_statement(statement, name, (name, bucket, id, value)).await
+                self.execute_statement(statement, (name, bucket, id, value)).await
             }
             ScalarType::int64 => {
                 let value = decode_optional(data, i64::from_le_bytes)?;
-                self.execute_statement(statement, name, (name, bucket, id, value)).await
+                self.execute_statement(statement, (name, bucket, id, value)).await
             }
             ScalarType::uint64 => {
                 // uint64 is represented as CQL blob.
-                self.execute_statement(statement, name, (name, bucket, id, data)).await
+                self.execute_statement(statement, (name, bucket, id, data)).await
             }
             ScalarType::float32 => {
                 let value = decode_optional(data, f32::from_le_bytes)?;
-                self.execute_statement(statement, name, (name, bucket, id, value)).await
+                self.execute_statement(statement, (name, bucket, id, value)).await
             }
             ScalarType::float64 => {
                 let value = decode_optional(data, f64::from_le_bytes)?;
-                self.execute_statement(statement, name, (name, bucket, id, value)).await
+                self.execute_statement(statement, (name, bucket, id, value)).await
             }
         }
     }
-    pub  async fn execute_statement_channel_metadata(&self, statement: &PreparedStatement, name: &str, kind: ScalarType, count:usize, from: i64) -> IOResult<()> {
+    pub  async fn execute_statement_channel_metadata(&self, statement: &PreparedStatement, name: &str, kind: ScalarType, count:usize, from: i64) -> IOResult<QueryResult> {
         let dtype = kind_to_dtype(kind);
-        self.execute_statement(statement, name, (name, from, dtype, count as i32)).await
+        self.execute_statement(statement, (name, from, dtype, count as i32)).await
+    }
+
+    pub async fn execute_statement_fetch_channel_metadata(&self, statement: &PreparedStatement, name: &str) -> IOResult<ChannelMetadata> {
+        //let mut rows = self.query_rows::<ChannelMetadata>(&cql::fetch_channel_metadata_query(table, channel),).await?;
+        let result = self.execute_statement(statement, (name,)).await?;
+        //let mut rows = self.query_rows::<ChannelMetadata>(&cql::fetch_channel_metadata_query(table, channel),).await?;
+        let mut rows = Self::get_rows::<ChannelMetadata>(result)?;
+        if rows.is_empty() {
+            Err(IOError::other(format!("Channel metadata not found: {}", name)))
+        } else {
+            Ok(rows.remove(0))
+        }
+    }
+
+    async fn update_connected(&self){
+        let connected = self.query("SELECT now() FROM system.local").await.is_ok();
+        self.connected.store(connected, Ordering::Relaxed);
     }
 
     pub async fn on_timer(&self, minute_changed: bool, hour_changed: bool, day_changed: bool) -> IOResult<()> {
-        let connected = self.query("SELECT now() FROM system.local").await.is_ok();
-        self.connected.store(connected, Ordering::Relaxed);
+        self.update_connected().await;
         Ok(())
     }
 

@@ -11,6 +11,10 @@ mod config;
 mod cql;
 mod codec;
 
+#[cfg(test)]
+mod tests;
+
+
 use crate::arguments::{Arguments, StartupState};
 use crate::db::DB;
 use app::App;

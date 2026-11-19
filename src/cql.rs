@@ -148,7 +148,7 @@ pub fn insert_channel_metadata_query(name: &str) -> String {
 pub fn fetch_channels_query(name: &str) -> String {
     format!(
         r#"
-            SELECT DISTINCT {}
+            SELECT DISTINCT "{}"
             FROM "{}"."{}";
         "#,
         COLUMN_CHANNEL,
@@ -156,17 +156,17 @@ pub fn fetch_channels_query(name: &str) -> String {
     )
 }
 
-pub fn fetch_channel_metadata_query(name: &str, channnel: &str) -> String {
+pub fn fetch_channel_metadata_query(name: &str,) -> String {
     format!(
         r#"
             SELECT {}, {}, {}, {}
             FROM "{}"."{}"
-            WHERE {} = '{}'
+            WHERE {} = ?
             LIMIT 1;
         "#,
         COLUMN_CHANNEL, COLUMN_FROM, COLUMN_TYPE, COLUMN_COUNT,
         DB::keyspace(), name.replace('"', "\"\""),
-        COLUMN_CHANNEL, channnel
+        COLUMN_CHANNEL
     )
 }
 

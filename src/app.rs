@@ -173,7 +173,7 @@ impl App {
         })?;
 
         if database_enabled {
-            self.set_db_enabled(true);
+            self.set_db_enabled(true).await;
         }
 
         self.engine_client.send_config(self.config.clone()).await.inspect_err(|e| {
@@ -228,7 +228,7 @@ impl App {
         self.state == State::Started || self.state == State::Paused
     }
 
-    pub async fn wait(&self){
+    pub async fn wait(self: Arc<Self>){
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
             if self.state == State::Closed {

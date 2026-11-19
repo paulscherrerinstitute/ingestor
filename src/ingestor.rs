@@ -112,9 +112,13 @@ impl Ingestor {
             match channels {
                 Ok(channels) => {
                     let db = &self.db;
-                    let queries = channels.into_iter().map(|channel| async move {
-                        let metadata = db.fetch_channel_metadata(TABLE_CHANNEL_METADATA, &channel).await;
-                        (channel, metadata)
+                    let fetch_metadata_statement = db.create_channel_metadata_fetch_statement(TABLE_CHANNEL_METADATA).await?;
+                    let queries = channels.into_iter().map(|channel| {
+                        let statement = &fetch_metadata_statement;
+                        async move {
+                            let metadata = db.execute_statement_fetch_channel_metadata(&statement, &channel).await;
+                            (channel, metadata)
+                        }
                     });
                     let results = join_all(queries).await;
 

@@ -137,39 +137,42 @@ impl ChannelProcessor {
                 let metadata_errors = self.metadata_errors.clone();
                 let failed_metadata_records = self.failed_metadata_records.clone();
                 let metadata_stats = self.metadata_stats.clone();
+                self.metadata_stats.pending.fetch_add(1, Ordering::Relaxed);
                 handle.spawn(async move {
                     if let Err(e) = Self::append_metadata(&ingestor, &metadata_errors, &metadata_stats, &name,  id, kind, elements).await {
                         failed_metadata_records.write().await.push(ChannelMetadata{name: Some(name.to_string()),from: id, kind, count: elements});
                     }
                 });
-                self.metadata_stats.pending.fetch_add(1, Ordering::Relaxed);
             }
             MetadataProcessing::Buffered => {
                 if !self.metadata_sender.initialized(){
                     let (metadata_sender, mut metadata_receiver) = channel::<MetadataCommand>(self.arguments.metadata_queue);
-                    let ingestor = self.ingestor.clone();
-                    let metadata_errors = self.metadata_errors.clone();
-                    let failed_metadata_records = self.failed_metadata_records.clone();
-                    let metadata_stats = self.metadata_stats.clone();
-                    handle.spawn(async move {
-                        while let Some(msg) = metadata_receiver.recv().await {
-                            match msg {
-                                MetadataCommand::Insert { name, id, kind, elements } => {
-                                    if let Err(e) = Self::append_metadata(&ingestor, &metadata_errors,&metadata_stats, &name, id, kind, elements).await{
-                                        failed_metadata_records.write().await.push(ChannelMetadata{name: Some(name.to_string()),from: id, kind, count: elements});
+                    if self.metadata_sender.set(metadata_sender).is_ok(){
+                        //If error, it shoul be due to race condition, two tasks observing !initialized() at first time, so we igneore it. 
+                        let ingestor = self.ingestor.clone();
+                        let metadata_errors = self.metadata_errors.clone();
+                        let failed_metadata_records = self.failed_metadata_records.clone();
+                        let metadata_stats = self.metadata_stats.clone();
+                        handle.spawn(async move {
+                            while let Some(msg) = metadata_receiver.recv().await {
+                                match msg {
+                                    MetadataCommand::Insert { name, id, kind, elements } => {
+                                        if let Err(e) = Self::append_metadata(&ingestor, &metadata_errors,&metadata_stats, &name, id, kind, elements).await{
+                                            failed_metadata_records.write().await.push(ChannelMetadata{name: Some(name.to_string()),from: id, kind, count: elements});
+                                        }
                                     }
                                 }
                             }
-                        }
-                    });
-                    self.metadata_sender.set(metadata_sender).unwrap();
+                        });
+                    }
                 }
 
+                self.metadata_stats.pending.fetch_add(1, Ordering::Relaxed);
                 match self.metadata_sender.get().unwrap().try_send(MetadataCommand::Insert { name, id, kind, elements }) {
                     Ok(()) => {
-                        self.metadata_stats.pending.fetch_add(1, Ordering::Relaxed);
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
+                        self.metadata_stats.pending.fetch_sub(1, Ordering::Relaxed);
                         match(msg){
                             MetadataCommand::Insert {name,  id, kind, elements} => {
                                 log::warn!("Dropping  metadata insert command {}-{}-{}-{} : metadata queue is full", &name,  id, kind, elements);

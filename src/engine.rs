@@ -593,7 +593,7 @@ impl Engine {
             let new_dropped = if dropped < last_stats.dropped{dropped} else {dropped - last_stats.dropped};
             let new_processed = if processed < last_stats.processed{processed} else {processed - last_stats.processed};
             let new_treated = if treated < last_stats.treated {treated} else {treated - last_stats.treated };
-            let new_channel_dropped = if dropped < last_stats.channel_dropped{dropped} else {channel_dropped - last_stats.channel_dropped};
+            let new_channel_dropped = if channel_dropped < last_stats.channel_dropped{channel_dropped} else {channel_dropped - last_stats.channel_dropped};
             let new_max_pending = max (pending, last_stats.max_pending);
             let new_max_processing= max (processing, last_stats.max_processing);
             ((new_received as f32) / 10.0, (new_errors as f32) / 10.0, (new_dropped as f32) / 10.0, (new_processed as f32) / 10.0, (new_treated as f32) / 10.0, (new_channel_dropped as f32) / 10.0,
