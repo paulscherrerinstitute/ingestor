@@ -182,6 +182,7 @@ impl ChannelProcessor {
                         return false
                     }
                     Err(err) => {
+                        self.metadata_stats.pending.fetch_sub(1, Ordering::Relaxed);
                         log::error!("Metadata handler is not running",);
                         return false
                     }

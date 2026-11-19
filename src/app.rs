@@ -98,7 +98,8 @@ impl App {
     pub async fn set_config(&mut self, config: Config) -> IOResult<()> {
         self.config = config;
         if let Err(e) = self.config.save(&self.arguments.config_path) {
-                log::error!("Error saving config to {:?}: {}", &self.arguments.config_path, e);
+            log::error!("Error saving config to {:?}: {}", &self.arguments.config_path, e);
+            return Err(e);
         }
         self.engine_client.send_config(self.config.clone()).await
     }
@@ -161,7 +162,7 @@ impl App {
         log::info!("Starting service");
         self.set_state(State::Starting);
 
-        self.db.connect().await.inspect_err(|e| {
+        self.db.initialize().await.inspect_err(|e| {
             log::error!("Error connecting to database: {:?}", e);
             self.set_state(State::Error);
         })?;

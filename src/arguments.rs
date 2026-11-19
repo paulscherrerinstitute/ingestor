@@ -84,6 +84,8 @@ pub struct Arguments {
     pub storage_layout:StorageLayout,
     pub metadata_on_changed:bool,
     pub metadata_queue: usize,
+    pub replication:u32,
+    pub datacenter:Option<String>,
     pub create:bool,
 }
 
@@ -110,6 +112,8 @@ impl Default for Arguments {
             storage_layout: StorageLayout::Default,
             metadata_on_changed: false,
             metadata_queue: 10000,
+            replication:1,
+            datacenter:None,
             create: false,
         }
     }
@@ -212,6 +216,12 @@ pub struct Cli {
     #[arg(long, help = "Metadata queue size, if metadata writing is not synchronous")]
     pub metadata_queue: Option<usize>,
 
+    #[arg(long,  help = "Database replication factor")]
+    pub replication: Option<u32>,
+
+    #[arg(long, help = "Database replication datacenter")]
+    pub datacenter: Option<String>,
+
     #[arg(long , action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Create databases if absent")]
     pub create: Option<bool>,
 
@@ -300,6 +310,14 @@ impl Cli {
 
         if let Some(value) = self.metadata_queue {
             arguments.metadata_queue = value;
+        }
+
+        if let Some(value) = self.replication {
+            arguments.replication = value;
+        }
+
+        if self.datacenter.is_some() {
+            arguments.datacenter= self.datacenter;
         }
 
         if let Some(value) = self.create {

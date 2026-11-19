@@ -70,11 +70,13 @@ static KEYSPACE: OnceLock<String> = OnceLock::new();
 
 impl DB {
     pub fn new(arguments: Arc<Arguments>) -> Self {
-        let keyspace = match arguments.storage_layout{
-            StorageLayout::Default => {KEYSPACE_DEFAULT.to_string()},
-            _ => {format! ("db_{:?}", arguments.storage_layout).to_lowercase()}
-        };
-        KEYSPACE.set(keyspace.to_string()).expect("KEYSPACE has already been initialized");
+        if KEYSPACE.get().is_none() {
+            let keyspace = match arguments.storage_layout{
+                StorageLayout::Default => {KEYSPACE_DEFAULT.to_string()},
+                _ => {format! ("db_{:?}", arguments.storage_layout).to_lowercase()}
+            };
+            KEYSPACE.set(keyspace.to_string()).expect("KEYSPACE has already been initialized");
+        }
         Self { arguments, session: OnceCell::new(), enabled: AtomicBool::new(false) , connected: AtomicBool::new(false) }
     }
 
@@ -96,7 +98,7 @@ impl DB {
                 }
 
                 if arguments.create {
-                    let query = cql::keyspace_creation();
+                    let query = cql::keyspace_creation(&arguments.datacenter, arguments.replication);
                     if let Err(e) = session.query_unpaged(query, &[]).await {
                         log::error!("Error creating keyspace {}: {}", Self::keyspace(), e);
                     }
@@ -175,8 +177,7 @@ impl DB {
     }
 
 
-    pub async fn connect(&self) -> IOResult<()> {
-        //loop {
+    pub async fn initialize(&self) -> IOResult<()> {
         if self.is_initialized() {
             return Ok(());
         }

@@ -23,17 +23,19 @@ pub fn now() -> String {
     "SELECT now() FROM system.local".to_string()
 }
 
-pub fn keyspace_creation() -> String {
+pub fn keyspace_creation(datacenter: &Option<String>, replication: u32) -> String {
+    let replication = match datacenter {
+        Some(datacenter) => format!("{{'class': 'NetworkTopologyStrategy', '{}': {}}}", datacenter, replication),
+        None => format!("{{'class': 'NetworkTopologyStrategy', 'replication_factor': {}}}", replication)
+    };
     format!(
         "CREATE KEYSPACE IF NOT EXISTS {} \
-            WITH REPLICATION = {{'class': 'NetworkTopologyStrategy', 'replication_factor': 1}}",
-        DB::keyspace()
+            WITH replication = {} \
+            AND durable_writes = true;\
+            ",
+        DB::keyspace(), replication
     )
 }
-
-
-//WITH replication = {'class': 'NetworkTopologyStrategy', '<datacenter_name>': 3}
-//AND durable_writes = true;
 
 pub fn table_names() -> String {
     format!("SELECT table_name \

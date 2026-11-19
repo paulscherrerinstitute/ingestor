@@ -206,7 +206,6 @@ pub fn init(app:Arc<RwLock<App>>) -> Router {
         .route("/source/{*address}", get(source))
         .route("/log-level", get(log_level))
         .route("/tables", get(tables))
-        .route("/query", post(query))
         .route("/start", post(start))
         .route("/stop", post(stop))
         .route("/pause", post(pause))
@@ -214,6 +213,10 @@ pub fn init(app:Arc<RwLock<App>>) -> Router {
         .route("/reset_stats", post(reset_stats))
         .route("/config", put(set_config))
         .route("/log-level", put(set_log_level));
+
+    #[cfg(test)]
+    let api = api.route("/query", post(query));
+
     let app = Router::new()
         .nest(API_PREFIX, api)
         .with_state(app);
