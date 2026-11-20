@@ -4,8 +4,11 @@ use bsread::{ChannelConfig, ChannelData, EndpointDiag, EndpointEvent, EndpointSt
 use futures::future::join_all;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::ErrorKind;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering, AtomicUsize};
 use std::sync::{RwLock};
 use tokio::runtime::Handle;
@@ -46,13 +49,13 @@ struct ChannelMessage{
     header_changed:bool,
 }
 
-
 pub struct Processor {
     arguments:Arc<Arguments>,
     sources_info:Arc<RwLock<HashMap<String, SourceInfo>>>,
     channel_processor: Arc<ChannelProcessor>,
     stats: Arc<ProcessorStats>,
     channel_buffers:Arc<RwLock<HashMap<String,tokio::sync::mpsc::Sender<ChannelMessage>>>>,
+    channel_shards: OnceLock<Vec<tokio::sync::mpsc::Sender<ChannelMessage>>>,
 }
 
 pub enum MetadataCommand {
@@ -67,131 +70,204 @@ impl Processor {
         let sources_info = Arc::new(RwLock::new(HashMap::new()));
         let stats = Arc::new(ProcessorStats {pending:AtomicU32::new(0), treated:AtomicU32::new(0), dropped:AtomicU32::new(0)});
         let channel_buffers =Arc::new(RwLock::new(HashMap::new()));
-        Self {arguments, sources_info, channel_processor, stats,channel_buffers}
+        let channel_shards = OnceLock::new();
+        Self {arguments, sources_info, channel_processor, stats,channel_buffers, channel_shards}
     }
 
-    pub async fn process(&self, endpoint: Option<String>, message: Message){
+    pub async fn process(&self, endpoint: Option<String>, message: Message) {
         if let Err(err) = self.check_msg(&endpoint, &message){
             log::debug!("Message check failed: {}", err);
         } else {
-            if message.header_changed()  {
-                let id = message.id();
-                let handle = Handle::current();
-                for channel in message.channels() {
-                    let config = channel.config();
-                    self.channel_processor.process_metadata(config.name(), id, config.kind(),config.elements(), &handle);
-                }
-            }
-
+            self.check_metadata(&message, &Handle::current());
+            let handle = Handle::current();
             match self.arguments.channel_processing {
-                ChannelProcessing::Sync => {
-                    let (id, tm, header_changed, channels, data) = message.into_parts();
-                    for (channel, (_key, value)) in channels.into_iter().zip(data) {
-                        let config = channel.into_config();
-                        if let Ok(data) = Self::as_bytes(&config, value) {
-                            self.channel_processor.process_data(id, tm, config, data, header_changed).await;
-                        }
-                        self.stats.treated.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-                ChannelProcessing::Async => {
-                    let (id, tm, header_changed, channels, data) = message.into_parts();
-                    for (channel, (_key, value)) in channels.into_iter().zip(data) {
-                        let channel_processor = Arc::clone(&self.channel_processor);
-                        let stats = Arc::clone(&self.stats);
-                        stats.pending.fetch_add(1, Ordering::Relaxed);
-                        tokio::spawn(async move {
-                            let config = channel.into_config();
-                            if let Ok(data) = Self::as_bytes(&config, value) {
-                                channel_processor.process_data(id, tm, config, data, header_changed).await;
-                            }
-                            stats.pending.fetch_sub(1, Ordering::Relaxed);
-                            stats.treated.fetch_add(1, Ordering::Relaxed);
-                        });
-                    }
-                }
-                ChannelProcessing::Joined => {
-                    let (id, tm, header_changed, channels, data) = message.into_parts();
-                    let stats = Arc::clone(&self.stats);
-                    let futures = channels.into_iter().zip(data)
-                        .filter_map(|(channel, (_key, value))| {
-                            let config = channel.into_config();
-                            let ret = match Self::as_bytes(&config, value) {
-                                Ok(data) => Some(
-                                    self.channel_processor.process_data(id, tm, config, data,header_changed,)
-                                ),
-                                Err(err) => {None}
-                            };
-                            stats.treated.fetch_add(1, Ordering::Relaxed);
-                            ret
-                        });
-                    join_all(futures).await;
-
-                }
-                ChannelProcessing::Buffered => {
-                    self.process_direct(endpoint, message, &tokio::runtime::Handle::current());
-                }
+                ChannelProcessing::Sync => self.process_sync(message).await,
+                ChannelProcessing::Async => self.process_async(message, &handle),
+                ChannelProcessing::Joined => self.process_joined(message).await,
+                ChannelProcessing::Buffered => self.process_buffered(message, &Handle::current()),
+                ChannelProcessing::Sharded => self.process_sharded(message, &handle),
             }
         }
     }
 
-    pub fn process_direct(&self, endpoint: Option<String>, message: Message, handle:&Handle){
+    pub fn process_direct(&self, endpoint: Option<String>, message: Message, handle: &Handle) {
         if let Err(err) = self.check_msg(&endpoint, &message){
             log::debug!("Message check failed: {}", err);
         } else {
-            let (id, tm, header_changed, channels, data) = message.into_parts();
+            self.check_metadata(&message, handle);
 
             match self.arguments.channel_processing {
-                ChannelProcessing::Buffered => {
-                    for (channel, (_key, value)) in channels.into_iter().zip(data) {
-                        let config = channel.into_config();
-                        let channel_name = config.name();
-                        let stats = Arc::clone(&self.stats);
-                        let channel_processor = Arc::clone(&self.channel_processor);
-
-                        if header_changed  {
-                            self.channel_processor.process_metadata(config.name(), id, config.kind(),config.elements(), handle);
-                        }
-
-                        if let Ok(data) = Self::as_bytes(&config, value) {
-                            let sender = {
-                                self.channel_buffers.read().unwrap().get(&channel_name).cloned()
-                            };
-                            let sender = match sender {
-                                Some(sender) => sender,
-                                None => {
-                                    let (tx, mut rx) = tokio::sync::mpsc::channel::<ChannelMessage>(self.arguments.buffer_size);
-                                    handle.spawn(async move {
-                                        while let Some(msg) = rx.recv().await {
-                                            channel_processor.process_data(msg.id, msg.tm, msg.config, msg.data, msg.header_changed).await;
-                                            stats.pending.fetch_sub(1, Ordering::Relaxed);
-                                            stats.treated.fetch_add(1, Ordering::Relaxed);
-                                        }
-                                    });
-                                    let mut senders =self.channel_buffers.write().unwrap();
-                                    senders.entry(channel_name).or_insert_with(|| tx).clone()
-                                }
-                            };
-                            match sender.try_send(ChannelMessage{id, tm, config, data, header_changed}) {
-                                Ok(()) => {
-                                    self.stats.pending.fetch_add(1, Ordering::Relaxed);
-                                }
-                                Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
-                                    self.stats.dropped.fetch_add(1, Ordering::Relaxed);
-                                    log::debug!("Dropping message {} from {:?}: channel queue is full",id, msg.config.name());
-                                }
-                                Err(err) => {
-                                    log::error!("Error trying sending message: {:?}", err);
-                                }
-                            }
-                        }
-                    }
-                }
+                ChannelProcessing::Async => self.process_async(message, handle),
+                ChannelProcessing::Buffered => self.process_buffered(message, handle),
+                ChannelProcessing::Sharded => self.process_sharded(message, &handle),
                 _ => {
-                    panic!("Channel processing mode {:?} cannot have message processing mode direct." , self.arguments.channel_processing)
-                 }
+                    log::error!(
+                    "Channel processing mode {:?} cannot use direct message processing",
+                    self.arguments.channel_processing
+                );
+                }
             }
         }
+    }
+
+    fn check_metadata(&self, message: &Message, handle: &Handle){
+        if message.header_changed()  {
+            let id = message.id();
+            for channel in message.channels() {
+                let config = channel.config();
+                self.channel_processor.process_metadata(config.name(), id, config.kind(),config.elements(), &handle);
+            }
+        }
+    }
+
+    async fn process_sync(&self, message: Message){
+        let (id, tm, header_changed, channels, data) = message.into_parts();
+        for (channel, (_key, value)) in channels.into_iter().zip(data) {
+            let config = channel.into_config();
+            if let Ok(data) = Self::as_bytes(&config, value) {
+                self.channel_processor.process_data(id, tm, config, data, header_changed).await;
+            }
+            self.stats.treated.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn process_async(&self, message: Message, handle: &Handle){
+        let (id, tm, header_changed, channels, data) = message.into_parts();
+        for (channel, (_key, value)) in channels.into_iter().zip(data) {
+            let channel_processor = Arc::clone(&self.channel_processor);
+            let stats = Arc::clone(&self.stats);
+            stats.pending.fetch_add(1, Ordering::Relaxed);
+            handle.spawn(async move {
+                let config = channel.into_config();
+                if let Ok(data) = Self::as_bytes(&config, value) {
+                    channel_processor.process_data(id, tm, config, data, header_changed).await;
+                }
+                stats.pending.fetch_sub(1, Ordering::Relaxed);
+                stats.treated.fetch_add(1, Ordering::Relaxed);
+            });
+        }
+    }
+
+    async fn process_joined(&self, message: Message){
+        let (id, tm, header_changed, channels, data) = message.into_parts();
+        let stats = Arc::clone(&self.stats);
+        let futures = channels.into_iter().zip(data)
+            .filter_map(|(channel, (_key, value))| {
+                let config = channel.into_config();
+                match Self::as_bytes(&config, value) {
+                    Ok(data) => {
+                        let channel_processor = Arc::clone(&self.channel_processor);
+                        let stats = Arc::clone(&stats);
+                        Some(async move {
+                            channel_processor.process_data(id, tm, config, data, header_changed).await;
+                            stats.treated.fetch_add(1, Ordering::Relaxed);
+                        })
+                    }
+                    Err(err) => {
+                        log::debug!("Skipping channel on message {}: {}", id, err);
+                        None
+                    }
+                }
+            });
+        join_all(futures).await;
+    }
+
+    fn process_buffered(&self, message: Message, handle: &Handle){
+        let (id, tm, header_changed, channels, data) = message.into_parts();
+        for (channel, (_key, value)) in channels.into_iter().zip(data) {
+            let config = channel.into_config();
+            let channel_name = config.name();
+            let stats = Arc::clone(&self.stats);
+            let channel_processor = Arc::clone(&self.channel_processor);
+
+            if let Ok(data) = Self::as_bytes(&config, value) {
+                let sender = {
+                    self.channel_buffers.read().unwrap().get(&channel_name).cloned()
+                };
+                let sender = match sender {
+                    Some(sender) => sender,
+                    None => {
+                        let (tx, mut rx) = tokio::sync::mpsc::channel::<ChannelMessage>(self.arguments.buffer_size);
+                        handle.spawn(async move {
+                            while let Some(msg) = rx.recv().await {
+                                channel_processor.process_data(msg.id, msg.tm, msg.config, msg.data, msg.header_changed).await;
+                                stats.pending.fetch_sub(1, Ordering::Relaxed);
+                                stats.treated.fetch_add(1, Ordering::Relaxed);
+                            }
+                        });
+                        let mut senders =self.channel_buffers.write().unwrap();
+                        senders.entry(channel_name).or_insert_with(|| tx).clone()
+                    }
+                };
+                match sender.try_send(ChannelMessage{id, tm, config, data, header_changed}) {
+                    Ok(()) => {
+                        self.stats.pending.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
+                        self.stats.dropped.fetch_add(1, Ordering::Relaxed);
+                        log::debug!("Dropping message {} from {:?}: channel queue is full",id, msg.config.name());
+                    }
+                    Err(err) => {
+                        log::error!("Error trying sending message: {:?}", err);
+                    }
+                }
+            }
+        }
+    }
+
+
+    fn process_sharded(&self, message: Message, handle: &Handle){
+        let shards = self.channel_shards.get_or_init(|| {
+            let mut shards = Vec::with_capacity(self.arguments.channel_shards);
+            for shard_index in 0..self.arguments.channel_shards {
+                let (tx, mut rx) = tokio::sync::mpsc::channel::<ChannelMessage>(self.arguments.buffer_size);
+                let channel_processor = Arc::clone(&self.channel_processor);
+                let stats = Arc::clone(&self.stats);
+                handle.spawn(async move {
+                    while let Some(msg) = rx.recv().await {
+                        channel_processor
+                            .process_data(msg.id, msg.tm, msg.config, msg.data, msg.header_changed)
+                            .await;
+                        stats.pending.fetch_sub(1, Ordering::Relaxed);
+                        stats.treated.fetch_add(1, Ordering::Relaxed);
+                    }
+
+                    log::debug!("Channel shard {} stopped", shard_index);
+                });
+                shards.push(tx);
+            }
+            shards
+        });
+
+        let (id, tm, header_changed, channels, data) = message.into_parts();
+        for (channel, (_key, value)) in channels.into_iter().zip(data) {
+            let config = channel.into_config();
+            let channel_name = config.name();
+
+            if let Ok(data) = Self::as_bytes(&config, value) {
+                let shard_index = Self::channel_shard(&channel_name, shards.len());
+                let sender = &shards[shard_index];
+                match sender.try_send(ChannelMessage{id, tm, config, data, header_changed}) {
+                    Ok(()) => {
+                        self.stats.pending.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(msg)) => {
+                        self.stats.dropped.fetch_add(1, Ordering::Relaxed);
+                        log::debug!("Dropping message {} from {:?}: channel shard {} queue is full",id,msg.config.name(),shard_index
+                        );
+                    }
+                    Err(err) => {
+                        log::error!("Error trying sending message to channel shard: {:?}", err);
+                    }
+                }
+            }
+        }
+    }
+
+    fn channel_shard(channel_name: &str, shard_count: usize) -> usize {
+        let mut hasher = DefaultHasher::new();
+        channel_name.hash(&mut hasher);
+        (hasher.finish() as usize) % shard_count
     }
 
     fn check_msg(&self, endpoint: &Option<String>, message: &Message) -> IOResult<()> {

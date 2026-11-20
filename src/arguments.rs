@@ -35,7 +35,8 @@ pub enum ChannelProcessing {
     Sync,
     Async,
     Joined,
-    Buffered
+    Buffered,
+    Sharded
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ValueEnum, PartialEq)]
@@ -81,6 +82,7 @@ pub struct Arguments {
     pub message_processing: MessageProcessing,
     pub channel_processing:ChannelProcessing,
     pub metadata_processing:MetadataProcessing,
+    pub channel_shards: usize,
     pub storage_layout:StorageLayout,
     pub metadata_on_changed:bool,
     pub metadata_queue: usize,
@@ -109,6 +111,7 @@ impl Default for Arguments {
             message_processing: MessageProcessing::Direct , //Ordered,
             channel_processing: ChannelProcessing::Buffered, //Joined,
             metadata_processing: MetadataProcessing::Buffered,
+            channel_shards: 128,
             storage_layout: StorageLayout::Default,
             metadata_on_changed: false,
             metadata_queue: 10000,
@@ -203,6 +206,9 @@ pub struct Cli {
 
     #[arg(long, value_enum, help = "Channel metadata writing mode (default: Queued)")]
     pub metadata_processing: Option<MetadataProcessing>,
+
+    #[arg(long, help = "Number of channel processing shards")]
+    pub channel_shards: Option<usize>,
 
     #[arg(long, value_enum, help = "Database layout - Default stores all scalars as bigint")]
     pub storage_layout: Option<StorageLayout>,
@@ -300,6 +306,10 @@ impl Cli {
             arguments.metadata_on_changed = value;
         }
 
+        if let Some(value) = self.channel_shards {
+            arguments.channel_shards = value;
+        }
+                
         if let Some(value) = self.storage_layout {
             arguments.storage_layout = value;
         }
