@@ -262,7 +262,7 @@ impl App {
         self.engine_client.stats().await
     }
 
-    pub async fn diags(&self,) -> IOResult<HashMap<String, HashMap<EndpointDiag, u32>>> {
+    pub async fn diags(&self,) -> IOResult<HashMap<String, HashMap<EndpointDiag, u64>>> {
         self.engine_client.diags().await
     }
 

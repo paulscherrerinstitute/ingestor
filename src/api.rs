@@ -72,7 +72,7 @@ async fn status(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Status>, App
     Ok(Json(app.status().await?))
 }
 
-async fn diags(State(app): State<Arc<RwLock<App>>>) -> Result<Json<HashMap<String, HashMap<EndpointDiag, u32>>>, AppError> {
+async fn diags(State(app): State<Arc<RwLock<App>>>) -> Result<Json<HashMap<String, HashMap<EndpointDiag, u64>>>, AppError> {
     log::debug!("API call: diags");
     let app = app.read().await;
     Ok(Json(app.diags().await?))

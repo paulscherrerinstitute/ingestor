@@ -42,7 +42,7 @@ impl EngineClient {
         self.send_command(|response| EngineCommand::Stats { response }).await
     }
 
-    pub async fn diags(&self,) -> IOResult<HashMap<String, HashMap<EndpointDiag, u32>>> {
+    pub async fn diags(&self,) -> IOResult<HashMap<String, HashMap<EndpointDiag, u64>>> {
         self.send_command(|response| EngineCommand::Diags { response }).await
     }
 

@@ -9,7 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::io::ErrorKind;
 use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering, AtomicUsize};
+use std::sync::atomic::{AtomicU32, Ordering, AtomicUsize, AtomicU64};
 use std::sync::{RwLock};
 use tokio::runtime::Handle;
 use crate::arguments::{ChannelProcessing, MetadataProcessing};
@@ -36,9 +36,9 @@ impl SourceInfo {
 }
 
 pub struct ProcessorStats {
-    pub pending: AtomicU32,
-    pub treated: AtomicU32,
-    pub dropped: AtomicU32,
+    pub pending: AtomicU64,
+    pub treated: AtomicU64,
+    pub dropped: AtomicU64,
 }
 
 struct ChannelMessage{
@@ -68,7 +68,7 @@ pub enum MetadataCommand {
 impl Processor {
     pub fn new(arguments:Arc<Arguments>, channel_processor: Arc<ChannelProcessor>) -> Self {
         let sources_info = Arc::new(RwLock::new(HashMap::new()));
-        let stats = Arc::new(ProcessorStats {pending:AtomicU32::new(0), treated:AtomicU32::new(0), dropped:AtomicU32::new(0)});
+        let stats = Arc::new(ProcessorStats {pending:AtomicU64::new(0), treated:AtomicU64::new(0), dropped:AtomicU64::new(0)});
         let channel_buffers =Arc::new(RwLock::new(HashMap::new()));
         let channel_shards = OnceLock::new();
         Self {arguments, sources_info, channel_processor, stats,channel_buffers, channel_shards}
@@ -357,23 +357,23 @@ impl Processor {
         }
     }
 
-    pub fn pending(&self) -> u32 {
+    pub fn pending(&self) -> u64 {
         self.stats.pending.load(Ordering::Relaxed)
     }
 
-    pub fn treated(&self) -> u32 {
+    pub fn treated(&self) -> u64 {
         self.stats.treated.load(Ordering::Relaxed)
     }
 
-    pub fn dropped(&self) -> u32 {
+    pub fn dropped(&self) -> u64 {
         self.stats.dropped.load(Ordering::Relaxed)
     }
 
-    pub fn metadata_pending(&self) -> u32 {self.channel_processor.metadata_stats.pending.load(Ordering::Relaxed)}
+    pub fn metadata_pending(&self) -> u64 {self.channel_processor.metadata_stats.pending.load(Ordering::Relaxed)}
 
-    pub fn metadata_treated(&self) -> u32 {self.channel_processor.metadata_stats.treated.load(Ordering::Relaxed)}
+    pub fn metadata_treated(&self) -> u64 {self.channel_processor.metadata_stats.treated.load(Ordering::Relaxed)}
 
-    pub fn metadata_dropped(&self) -> u32 {self.channel_processor.metadata_stats.dropped.load(Ordering::Relaxed)}
+    pub fn metadata_dropped(&self) -> u64 {self.channel_processor.metadata_stats.dropped.load(Ordering::Relaxed)}
 
     pub fn channel_buffers(&self) -> u32 {
         self.channel_buffers.read().unwrap().len() as u32

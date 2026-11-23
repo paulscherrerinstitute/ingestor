@@ -6,7 +6,7 @@ use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState,
 use std::collections::{HashMap, HashSet};
 use std::cmp::max;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::thread;
 use std::time::Instant;
 use serde::Serialize;
@@ -17,19 +17,19 @@ use crate::arguments::{MessageProcessing, StorageLayout};
 
 #[derive(Serialize)]
 pub struct Stats {
-    pub received: u32,
-    pub errors: u32,
-    pub dropped: u32,
-    pub processing: u32,
-    pub max_processing: u32,
-    pub processed: u32,
-    pub pending: u32,
-    pub channel_dropped:u32,
-    pub max_pending: u32,
-    pub treated: u32,
-    pub metadata_pending: u32,
-    pub metadata_dropped: u32,
-    pub metadata_treated: u32,
+    pub received: u64,
+    pub errors: u64,
+    pub dropped: u64,
+    pub processing: u64,
+    pub max_processing: u64,
+    pub processed: u64,
+    pub pending: u64,
+    pub channel_dropped:u64,
+    pub max_pending: u64,
+    pub treated: u64,
+    pub metadata_pending: u64,
+    pub metadata_dropped: u64,
+    pub metadata_treated: u64,
     pub received_rate: f32,
     pub errors_rate: f32,
     pub dropped_rate: f32,
@@ -64,7 +64,7 @@ pub enum EngineCommand {
         response: tokio::sync::oneshot::Sender<IOResult<()>>,
     },
     Diags {
-        response: tokio::sync::oneshot::Sender<IOResult<(HashMap<String, HashMap<EndpointDiag, u32>>)>>,
+        response: tokio::sync::oneshot::Sender<IOResult<(HashMap<String, HashMap<EndpointDiag, u64>>)>>,
     },
     Endpoints {
         response: tokio::sync::oneshot::Sender<IOResult<(HashMap<String, EndpointState>)>>,
@@ -81,8 +81,8 @@ pub enum EngineCommand {
 }
 
 struct ProcessingStats {
-    processing: AtomicU32,
-    processed: AtomicU32,
+    processing: AtomicU64,
+    processed: AtomicU64,
     duplicated_sources: AtomicU32,
     disabled_sources: AtomicU32,
 }
@@ -115,8 +115,11 @@ impl Engine {
         Engine {arguments, contexts, sources, pools, handle, processor,
             current:0,
             connected: false,
-            processing_stats: Arc::new(ProcessingStats{ processing: AtomicU32::new(0), processed: AtomicU32::new(0),
-                duplicated_sources: AtomicU32::new(0), disabled_sources: AtomicU32::new(0)}),
+            processing_stats: Arc::new(ProcessingStats{
+                processing: AtomicU64::new(0),
+                processed: AtomicU64::new(0),
+                duplicated_sources: AtomicU32::new(0),
+                disabled_sources: AtomicU32::new(0)}),
             last_stats: None
         }
     }
@@ -426,7 +429,7 @@ impl Engine {
         &self.pools
     }
 
-    pub fn diags(& self) -> HashMap<String, HashMap<EndpointDiag, u32>>{
+    pub fn diags(& self) -> HashMap<String, HashMap<EndpointDiag, u64>>{
         let mut diagnostics = HashMap::new();
         for pool in self.pools.iter() {
             for (endpoint, diag) in pool.diagnostics().iter(){
@@ -504,21 +507,21 @@ impl Engine {
         }
     }    
 
-    pub fn messages(&self) -> u32 {
+    pub fn messages(&self) -> u64 {
         self.pools
             .iter()
             .map(|r| r.messages())
             .sum()
     }
 
-    pub fn errors(&self) -> u32 {
+    pub fn errors(&self) -> u64 {
         self.pools
             .iter()
             .map(|r| r.errors())
             .sum()
     }
 
-    pub fn dropped(&self) -> u32 {
+    pub fn dropped(&self) -> u64 {
         self.pools
             .iter()
             .map(|r| r.dropped())
@@ -549,11 +552,11 @@ impl Engine {
         SourceStats{connected, connecting,disconnected,}
     }
 
-    pub fn processing(&self) -> u32 {
+    pub fn processing(&self) -> u64 {
         self.processing_stats.processing.load(Ordering::Relaxed)
     }
 
-    pub fn processed(&self) -> u32 {
+    pub fn processed(&self) -> u64 {
         self.processing_stats.processed.load(Ordering::Relaxed)
     }
 

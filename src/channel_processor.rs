@@ -43,7 +43,7 @@ impl ChannelProcessor {
              metadata_errors: Arc::new(AtomicU64::new(0)),
              metadata_sender: OnceCell::new(),
              failed_metadata_records,
-             metadata_stats:  Arc::new(ProcessorStats{pending:AtomicU32::new(0), treated:AtomicU32::new(0), dropped:AtomicU32::new(0)}),
+             metadata_stats:  Arc::new(ProcessorStats{pending:AtomicU64::new(0), treated:AtomicU64::new(0), dropped:AtomicU64::new(0)}),
     }
     }
 
