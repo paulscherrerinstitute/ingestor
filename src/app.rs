@@ -14,7 +14,7 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 use chrono::{DateTime, Local, Timelike};
 use scylla::response::query_result::QueryResult;
@@ -23,7 +23,8 @@ use tokio::task::JoinHandle;
 
 
 
-#[derive(Serialize, Debug, PartialEq, Clone)]
+#[derive(Serialize, Debug, PartialEq, Eq, Clone, Copy)]
+#[repr(u8)]
 pub enum State {
     Starting,
     Started,
@@ -33,6 +34,22 @@ pub enum State {
     Error,
     Closed,
 }
+
+impl State {
+    const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => State::Starting,
+            1 => State::Started,
+            2 => State::Paused,
+            3 => State::Stopping,
+            4 => State::Stopped,
+            6 => State::Closed,
+            _ => State::Error,
+        }
+    }
+}
+
+static STATE: AtomicU8 = AtomicU8::new(State::Stopped as u8);
 
 #[derive(Serialize)]
 pub struct Status {
@@ -45,7 +62,6 @@ pub struct Status {
 pub struct App {
     arguments:Arc<Arguments>,
     config:Config,
-    state:State,
     timer_handle: Option<JoinHandle<()>>,
     engine_client: EngineClient,
     processor: Arc<Processor>,
@@ -76,24 +92,32 @@ impl App {
         let processor = Arc::new(Processor::new(arguments.clone(), channel_processor.clone()));
         let startup =  chrono::Local::now();
         Engine::launch(arguments.clone(), engine_rx, handle.clone(), processor.clone());
-        App {arguments, config, engine_client, processor, channel_processor, db, ingestor, state:State::Stopped, timer_handle: None, startup}
+        STATE.store(State::Stopped as u8, Ordering::Release);
+        App {arguments, config, engine_client, processor, channel_processor, db, ingestor,  timer_handle: None, startup}
     }
 
-    fn assertState(&self, state:State) -> IOResult<()> {
-        if self.state != state {
-            Err(IOError::new(ErrorKind::NotFound, format!("Invalid state: {:?}", &self.state)))
+    fn assert_state(state:State) -> IOResult<()> {
+        let current = Self::state();
+        if current != state {
+            Err(IOError::new(ErrorKind::NotFound, format!("Invalid state: {:?}", current)))
         } else {
             Ok(())
         }
     }
 
-    fn assertStateNot(&self, state:State) -> IOResult<()> {
-        if self.state == state {
-            Err(IOError::new(ErrorKind::NotFound, format!("Invalid state: {:?}", &self.state)))
+    fn assert_state_not(state:State) -> IOResult<()> {
+        let current = Self::state();
+        if current == state {
+            Err(IOError::new(ErrorKind::NotFound, format!("Invalid state: {:?}", current)))
         } else {
             Ok(())
         }
     }
+
+    pub fn is_started() -> bool {
+        matches!(Self::state(), State::Started | State::Paused)
+    }
+
 
     pub async fn set_config(&mut self, config: Config) -> IOResult<()> {
         self.config = config;
@@ -107,24 +131,25 @@ impl App {
     pub async fn stop(& mut self) -> IOResult<()> {
         log::info!("Stopping service");
         self.set_state(State::Stopping);
+
         self.set_db_enabled(false).await;
         if let Some(handle) = self.timer_handle.take() {
             handle.abort();
             self.timer_handle = None;
         }
-        self.engine_client.disconnect().await?;
+        self.engine_client.stop().await?;
         self.set_state(State::Stopped);
         Ok(())
     }
     fn set_state(&mut self, state: State) {
         log::info!("Setting state to {:?}", state);
-        self.state = state;
+        STATE.store(state as u8, Ordering::Release);
     }
 
     async fn set_db_enabled(&mut self, enabled:bool){
         if enabled != self.db.is_enabled() {
             self.db.set_enabled(enabled);
-            if (enabled){
+            if enabled {
                 //Initialize BSREAD header info, so will receive header changed events on first message
                 log::info!("Enabled database access and resetting BSREAD headers");
                 if let Err(e) = self.reset_headers().await{
@@ -137,10 +162,10 @@ impl App {
     }
     
     pub async fn pause(&mut self) -> IOResult<()> {
-        if self.state == State::Stopped{
+        if Self::state() == State::Stopped{
             self.init(false).await?;
         } else {
-            self.assertState(State::Started)?;
+            Self::assert_state(State::Started)?;
         }
         self.set_db_enabled(false).await;
         self.set_state(State::Paused);
@@ -148,8 +173,8 @@ impl App {
     }
 
     pub async fn start(&mut self) -> IOResult<()> {
-        if self.state != State::Started {
-            if !self.is_started() {
+        if Self::state() != State::Started {
+            if !Self::is_started() {
                 self.init(true).await?;
             }
         }
@@ -181,7 +206,7 @@ impl App {
             log::error!("Error sending config in application startup: {:?}", e);
             self.set_state(State::Error);
         })?;
-        self.engine_client.connect().await.inspect_err(|e| {
+        self.engine_client.start().await.inspect_err(|e| {
             log::error!("Error connecting in application startup: {:?}", e);
             self.set_state(State::Error);
         })?;
@@ -190,6 +215,7 @@ impl App {
         let processor = self.processor.clone();
         let channel_processor = self.channel_processor.clone();
         let db = self.db.clone();
+        let arguments = self.arguments.clone();
         let timer_handle  = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
             let now = chrono::Local::now();
@@ -200,23 +226,33 @@ impl App {
                 let now = chrono::Local::now();
                 let (today, hour, minute) = (now.date_naive(), now.hour(), now.minute());
                 let (day_changed, hour_changed, minute_changed) =
-                    (today != current_day,hour != current_hour,minute != current_minute);
+                    (today != current_day, hour != current_hour, minute != current_minute);
 
-                if let Err(e) = engine_client.on_timer(minute_changed, hour_changed, day_changed).await{
+                if let Err(e) = engine_client.on_timer(minute_changed, hour_changed, day_changed).await {
                     log::error!("Error on engine timer: {:?}", e);
                 }
-                if let Err(e) = processor.on_timer(minute_changed, hour_changed, day_changed).await{
+                if let Err(e) = processor.on_timer(minute_changed, hour_changed, day_changed).await {
                     log::error!("Error on processor timer: {:?}", e);
                 }
-                if let Err(e) = channel_processor.on_timer(minute_changed, hour_changed, day_changed).await{
+                if let Err(e) = channel_processor.on_timer(minute_changed, hour_changed, day_changed).await {
                     log::error!("Error on channel processor timer: {:?}", e);
                 }
-                if let Err(e) = ingestor.on_timer(minute_changed, hour_changed, day_changed).await{
-                    log::error!("Error on ingestor timer: {:?}", e);
-                }
-                if let Err(e) = db.on_timer(minute_changed, hour_changed, day_changed).await{
+                if let Err(e) = db.on_timer(minute_changed, hour_changed, day_changed).await {
                     log::error!("Error on database timer: {:?}", e);
                 }
+
+                if day_changed {
+                    if !arguments.metadata_on_changed {
+                        log::info!("On-day change event: updating the channel metadata entries");
+                        //Make sure metadata table is updated every day
+                        ingestor.clear_metadata().await;
+                        //So that Ingestor::append_metadata will be called again
+                        if let Err(e) = engine_client.reset_headers().await {
+                            log::error!("Error on engine reset headers: {:?}", e);
+                        };
+                    }
+                }
+
                 (current_day, current_hour, current_minute)  = (today, hour, minute);
             }
         });
@@ -225,22 +261,19 @@ impl App {
     }
 
 
-    pub fn is_started(& self) -> bool {
-        self.state == State::Started || self.state == State::Paused
-    }
-
     pub async fn wait(self: Arc<Self>){
         loop {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            if self.state == State::Closed {
+            if Self::state() == State::Closed {
                 break;
             }
         }
     }
 
-    pub fn state(&self) -> State {
-        self.state.clone()
+    pub fn state() -> State {
+        State::from_u8(STATE.load(Ordering::Acquire))
     }
+
     pub fn arguments(&self) -> Arguments {
         (*self.arguments).clone()
     }
@@ -249,12 +282,11 @@ impl App {
         self.config.clone()
     }
 
-
     pub async fn status(&self) ->  IOResult<Status>  {
         let endpoints = self.engine_client.endpoints().await?;
         let database = self.db.status();
         let uptime_seconds =  (Local::now() - self.startup).as_seconds_f32() as u32;;
-        let state = self.state();
+        let state = Self::state();
         Ok(Status{state, endpoints, database, uptime_seconds})
     }
 

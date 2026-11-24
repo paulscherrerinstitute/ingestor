@@ -79,6 +79,7 @@ pub struct Arguments {
     pub receive_hwm: i32,
     pub disable_handshake:bool,
     pub blocking_config:bool,
+    pub monotonic: bool,
     pub message_processing: MessageProcessing,
     pub channel_processing:ChannelProcessing,
     pub metadata_processing:MetadataProcessing,
@@ -108,6 +109,7 @@ impl Default for Arguments {
             receive_hwm: 1000,
             disable_handshake: false,
             blocking_config: true,
+            monotonic: true,
             message_processing: MessageProcessing::Direct , //Ordered,
             channel_processing: ChannelProcessing::Buffered, //Joined,
             metadata_processing: MetadataProcessing::Buffered,
@@ -151,6 +153,12 @@ impl Arguments {
         };
 
         cli.apply(&mut arguments);
+
+        //Validations
+        if arguments.channel_shards==0 {
+            log::error!("Channel shards must be greater than 0");
+            std::process::exit(1);
+        }
         arguments
     }
 }
@@ -197,6 +205,9 @@ pub struct Cli {
 
     #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Configuration commands are blocking")]
     pub blocking_config: Option<bool>,
+
+    #[arg(long, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true", help = "Discard messages with non-monotonic ids")]
+    pub monotonic: Option<bool>,
 
     #[arg(long, value_enum, help = "How receivers send messages for processing (default: direct call)")]
     pub  message_processing: Option<MessageProcessing>,
@@ -294,6 +305,10 @@ impl Cli {
             arguments.blocking_config = value;
         }
 
+        if let Some(value) = self.monotonic {
+            arguments.monotonic = value;
+        }
+
         if let Some(value) = self.message_processing {
             arguments.message_processing = value;
         }
@@ -309,7 +324,7 @@ impl Cli {
         if let Some(value) = self.channel_shards {
             arguments.channel_shards = value;
         }
-                
+
         if let Some(value) = self.storage_layout {
             arguments.storage_layout = value;
         }

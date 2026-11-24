@@ -26,11 +26,11 @@ impl EngineClient {
             map_err(|_| {IOError::new(ErrorKind::BrokenPipe,"Engine terminated",)})?
     }
 
-    pub async fn connect(&mut self) -> IOResult<()> {
+    pub async fn start(&mut self) -> IOResult<()> {
         self.send_command(|response| EngineCommand::Start { response }).await
     }
 
-    pub async fn disconnect(&self) -> IOResult<()> {
+    pub async fn stop(&self) -> IOResult<()> {
         self.send_command(|response| EngineCommand::Stop { response }).await
     }
 

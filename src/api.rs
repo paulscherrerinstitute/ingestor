@@ -62,8 +62,7 @@ async fn args(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Arguments>, Ap
 
 async fn state(State(app):  State<Arc<RwLock<App>>>) -> Result<Json<crate::app::State>, AppError> {
     log::debug!("API call: state");
-    let app = app.read().await;
-    Ok(Json(app.state()))
+    Ok(Json(App::state()))
 }
 
 async fn status(State(app): State<Arc<RwLock<App>>>) -> Result<Json<Status>, AppError> {
@@ -192,7 +191,7 @@ async fn set_log_level(State(app): State<Arc<RwLock<App>>>,Json(level): Json<Str
     Ok(Response::ok())
 }
 
-
+//TODO: Add a token or mTLS for mutating
 pub fn init(app:Arc<RwLock<App>>) -> Router {
     let api = Router::new()
         .route("/args", get(args))

@@ -3,12 +3,14 @@ use crate::Arguments;
 use crate::DB;
 use crate::cql;
 use crate::codec::*;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock, PoisonError};
 use std::sync::atomic::Ordering;
 use bsread::{channel, IOError, IOResult, ScalarType};
 use scylla::statement::prepared::PreparedStatement;
-use tokio::sync::{ RwLock};
+use tokio::sync::{RwLock};
 use futures::future::join_all;
+use std::io::ErrorKind;
+use crate::app::App;
 use crate::arguments::StorageLayout;
 
 pub const TABLE_SCALARS:&str = "measurements";
@@ -57,57 +59,71 @@ impl From<crate::db::ChannelMetadata> for ChannelMetadata {
     }
 }
 
+/// Prepared insert statements keyed by table name. Immutable once published.
+type Statements = HashMap<&'static str, PreparedStatement>;
+
 pub struct Ingestor {
     arguments: Arc<Arguments>,
     db: Arc<DB>,
-    insert_statements: RwLock<HashMap<String, PreparedStatement>>,
+    /// Swapped atomically by `init()`; readers only clone the `Arc` (no await, no statement clone).
+    insert_statements: StdRwLock<Arc<Statements>>,
     channel_metadata: RwLock<HashMap<String, ChannelMetadata>>,
 }
 
 
 impl Ingestor {
     pub fn new(arguments:Arc<Arguments>, db:Arc<DB>) -> Self {
-        let insert_statements = RwLock::new(HashMap::new());
+        let insert_statements = StdRwLock::new(Arc::new(HashMap::new()));
         let channel_metadata =RwLock::new(HashMap::new());
         Self { arguments, db, insert_statements, channel_metadata}
     }
 
-    fn bucket(&self, id:i64, kind:ScalarType, shape:&Option<Vec<u32>>) -> i64 {
-        let divider = if channel::is_array(shape){
+    fn bucket(id: i64, kind: ScalarType, is_array: bool) -> i64 {
+        let divider = if is_array {
             BUCKET_DIVISOR_WAVEFORMS
         } else if kind == ScalarType::string {
             BUCKET_DIVISOR_STRINGS
         } else {
             BUCKET_DIVISOR_SCALARS
         };
-        id/divider
+        id / divider
+    }
+
+    /// Snapshot of the prepared statements. The lock is held only for the `Arc` clone.
+    fn statements(&self) -> Arc<Statements> {
+        Arc::clone(&self.insert_statements.read().unwrap_or_else(PoisonError::into_inner))
     }
 
     pub async fn init(&self) -> IOResult<()> {
         log::info!("Initializing ingestor...");
         self.db.session().expect("Database session not initialized");
+        // Build locally and publish at the end, so a failed init never leaves a partial map.
+        let mut statements: Statements = HashMap::new();
         if self.arguments.storage_layout == StorageLayout::Typed {
             self.db.create_data_table(TABLE_WAVEFORMS, "blob", true).await?;
-            self.insert_statements.write().await.insert(TABLE_WAVEFORMS.to_string(), self.db.create_data_insert_statement(TABLE_WAVEFORMS, true).await?);
+            statements.insert(TABLE_WAVEFORMS, self.db.create_data_insert_statement(TABLE_WAVEFORMS, true).await?);
             for cql_type in cql::CQL_TYPES {
-                let table_name = cql_type;
-                self.db.create_data_table(table_name, cql_type, false).await?;
-                self.insert_statements.write().await.insert(table_name.to_string(),self.db.create_data_insert_statement(&table_name, false).await?);
+                let table_name: &'static str = cql_type;
+                self.db.create_data_table(table_name, table_name, false).await?;
+                statements.insert(table_name, self.db.create_data_insert_statement(table_name, false).await?);
             }
         }  else if self.arguments.storage_layout == StorageLayout::Default {
             self.db.create_data_table(TABLE_WAVEFORMS, "blob", true).await?;
             self.db.create_data_table(TABLE_STRINGS, "text", false).await?;
             self.db.create_data_table(TABLE_SCALARS, "bigint", true).await?;
-            self.insert_statements.write().await.insert(TABLE_WAVEFORMS.to_string(), self.db.create_data_insert_statement(TABLE_WAVEFORMS, true).await?);
-            self.insert_statements.write().await.insert(TABLE_STRINGS.to_string(), self.db.create_data_insert_statement(TABLE_STRINGS, false).await?);
-            self.insert_statements.write().await.insert(TABLE_SCALARS.to_string(), self.db.create_data_insert_statement(TABLE_SCALARS, true).await?);
+            statements.insert(TABLE_WAVEFORMS, self.db.create_data_insert_statement(TABLE_WAVEFORMS, true).await?);
+            statements.insert(TABLE_STRINGS, self.db.create_data_insert_statement(TABLE_STRINGS, false).await?);
+            statements.insert(TABLE_SCALARS, self.db.create_data_insert_statement(TABLE_SCALARS, true).await?);
         }
-        self.db.create_channel_metadata_table(TABLE_CHANNEL_METADATA).await?;;
-        self.insert_statements.write().await.insert(TABLE_CHANNEL_METADATA.to_string(), self.db.create_channel_metadata_insert_statement(TABLE_CHANNEL_METADATA).await?);
+        self.db.create_channel_metadata_table(TABLE_CHANNEL_METADATA).await?;
+        statements.insert(TABLE_CHANNEL_METADATA, self.db.create_channel_metadata_insert_statement(TABLE_CHANNEL_METADATA).await?);
+        *self.insert_statements.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(statements);
         self.channel_metadata.write().await.clear();
 
         if self.arguments.metadata_on_changed {
-            //TODO: can I retrieve the latest metadata for each channel with a single CQL call?
+
+            //TODO: this is inneficient, but metadata_on_changed is not currently not planned
+            // to be used in production. If it is, we should consider a more efficient approach.
             let channels = self.db.fetch_channels(TABLE_CHANNEL_METADATA).await;
             match channels {
                 Ok(channels) => {
@@ -149,85 +165,73 @@ impl Ingestor {
         Ok(())
     }
 
-    pub async fn on_timer(&self, minute_changed: bool, hour_changed: bool, day_changed: bool) -> IOResult<()> {
-        if day_changed {
-            if !self.arguments.metadata_on_changed {
-                log::info!("On-day change event: updating the channel metadata entries");
-                //Make sure metadata table is updated every day
-                self.channel_metadata.write().await.clear();
-            }
-        }
-        Ok(())
+    pub async fn clear_metadata(&self){
+         self.channel_metadata.write().await.clear();
     }
+
 
     pub fn enabled(&self) -> bool {
         self.db.enabled_session().is_some()
     }
 
+    fn to_db_id(name: &str, id: u64) -> IOResult<i64> {
+        i64::try_from(id)
+            .ok()
+            .filter(|id| *id > 0)
+            .ok_or_else(|| IOError::new(ErrorKind::InvalidInput, format!("Invalid id for {}: {}", name, id)))
+    }
 
-    pub async fn append_metadata(&self, name:&str, kind:ScalarType, elements:usize, id: u64) -> IOResult<()> {
-        if self.enabled() {
-            let metadata = self.channel_metadata.read().await.get(name).cloned(); //Lock released
-            let insert = match &metadata {
-                None => { true }
-                Some(metadata) => {
-                    metadata.count != elements || metadata.kind != kind
-                }
-            };
-            if insert {
-                let reason = if metadata.is_some() {"changed"} else {"added"};
-                log::info!("Channel {} metadata {}: kind={:?} count={} from={}", name, reason, kind, elements, id);
-                self.channel_metadata.write().await.insert(name.to_string(), ChannelMetadata { name:None, from: id, kind: kind, count: elements });
-                let insert_statement = self.insert_statements.read().await.get(TABLE_CHANNEL_METADATA).cloned();
-
-                if let Some(statement) = insert_statement {
-                    self.db.execute_statement_channel_metadata(&statement, name, kind, elements, id as i64).await?;
-                } else {
-                    log::error!("Insert statement for channel metadata table not found");
-                }
-            }
-        }
-        Ok(())
+    fn missing_statement(table_name: &str) -> IOError {
+        IOError::new(ErrorKind::NotFound,format!("Insert statement for table {} not prepared (ingestor not initialized?)", table_name))
     }
 
 
 
-    pub async fn append_record(&self, name:&str,  kind:ScalarType, shape:&Option<Vec<u32>>, elements:usize, id: u64, tm: (u64, u64), data:Option<Vec<u8>>) -> IOResult<()> {
+
+    pub async fn append_metadata(&self, name:&str, kind:ScalarType, elements:usize, id: u64) -> IOResult<()> {
         if self.enabled() {
-            let table_name = get_table_name(&self.arguments.storage_layout, name, kind, &shape);
-            let id = id as i64;
-            if id <= 0 {
-                return Err(IOError::other(format!("Invalid id for {}: {}", name, id)));
+            let previous = self.channel_metadata.read().await.get(name).cloned(); //Lock released
+            if previous.as_ref().is_some_and(|m| m.count == elements && m.kind == kind) {
+                return Ok(());
             }
-            
-            //let timestamp_sec = tm.0 as i64;
-            //let timestamp_nsec = tm.1 as i64;
-            let insert_statement = self.insert_statements.read().await.get(table_name).cloned(); //Lock released
+            let from = Self::to_db_id(name, id)?;
+            let statements = self.statements();
+            let statement = statements.get(TABLE_CHANNEL_METADATA)
+                .ok_or_else(|| Self::missing_statement(TABLE_CHANNEL_METADATA))?;
 
-            let bucket = self.bucket(id, kind, shape);
+            let reason = if previous.is_some() { "changed" } else { "added" };
+            log::info!("Channel {} metadata {}: kind={:?} count={} from={}", name, reason, kind, elements, id);
+
+
+            self.db.execute_statement_channel_metadata(statement, name, kind, elements, from).await?;
+            // Cache only after a successful write, so failed inserts are really retried
+            self.channel_metadata.write().await
+                .insert(name.to_string(), ChannelMetadata { name: None, from: id, kind, count: elements });
+            //This implementation is not ideal for sync metadada_processing or async channel_processing
+            //because we may have multiple fb calls before writing the buffer.
+            //Async modes are not expected to be used in production.
+            // If so the implementation should change buffer first and revert if there is an error in DB.
+
+        }
+        Ok(())
+    }
+
+    pub async fn append_record(&self, name:&str,  kind:ScalarType, shape:&Option<Vec<u32>>, _elements:usize, id: u64, _tm: (u64, u64), data:Option<Vec<u8>>) -> IOResult<()> {
+        if self.enabled() {
+            let id = Self::to_db_id(name, id)?;
+            let layout = &self.arguments.storage_layout;
+            let table_name = get_table_name(layout, name, kind, shape);
+            let statements = self.statements();
+            let statement = statements.get(table_name).ok_or_else(|| Self::missing_statement(table_name))?;
             let is_array = channel::is_array(shape);
-            let is_scalar_i64 = !is_array && self.arguments.storage_layout == StorageLayout::Default && kind != ScalarType::string;
+            let bucket = Self::bucket(id, kind, is_array);
 
-            match insert_statement{
-                None => {
-                    log::warn!("Insert statement with name {} not found", name);
-                    if is_scalar_i64 {
-                        self.db.insert_asi64(&table_name, name, kind, bucket, id, data).await?;
-                    } else if is_array {
-                        self.db.insert_blob(&table_name, name, kind, bucket, id, data).await?;
-                    } else {
-                        self.db.insert_typed(&table_name, name, kind, bucket, id, data).await?;
-                    }
-                }
-                Some(statement) => {
-                    if is_scalar_i64 {
-                        self.db.execute_statement_i64(&statement, name, kind, bucket, id, data).await?;
-                    } else if is_array {
-                        self.db.execute_statement_blob(&statement, name, kind, bucket, id, data).await?;
-                    } else {
-                        self.db.execute_statement_typed(&statement, name, kind, bucket, id, data).await?;
-                    }
-                }
+            if is_array {
+                self.db.execute_statement_blob(statement, name, kind, bucket, id, data).await?;
+            } else if *layout == StorageLayout::Default && kind != ScalarType::string {
+                self.db.execute_statement_i64(statement, name, kind, bucket, id, data).await?;
+            } else {
+                self.db.execute_statement_typed(statement, name, kind, bucket, id, data).await?;
             }
         }
         Ok(())

@@ -56,7 +56,7 @@ pub fn columns(table_name:&str) -> String {
 }
 
 pub fn column_type(table_name:&str, column_name:&str) -> String {
-    format!("SELECT type \
+    format!("SELECT type  AS column_type \
                  FROM system_schema.columns \
                  WHERE keyspace_name = '{}' \
                  AND table_name = '{}' \

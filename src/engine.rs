@@ -2,9 +2,10 @@ use crate::Arguments;
 use crate::config::{Config, Source};
 use crate::processor::Processor;
 use bsread::receiver::{AsyncExecution, MessageStats};
-use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOResult, Pool, ReceivedMessage, SocketConfig, SocketType};
+use bsread::{Bsread, ConnectionMode, EndpointDiag, EndpointEvent, EndpointState, IOError, IOResult, Pool, ReceivedMessage, SocketConfig, SocketType};
 use std::collections::{HashMap, HashSet};
 use std::cmp::max;
+use std::io::ErrorKind;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::thread;
@@ -13,6 +14,7 @@ use serde::Serialize;
 use sysinfo::{Pid, ProcessesToUpdate, System};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::Receiver;
+use crate::app::App;
 use crate::arguments::{MessageProcessing, StorageLayout};
 
 #[derive(Serialize)]
@@ -104,6 +106,7 @@ pub struct Engine {
     processor: Arc<Processor>,
     processing_stats: Arc<ProcessingStats>,
     last_stats: Option<Stats>,
+    system: System,
 }
 
 impl Engine {
@@ -112,6 +115,7 @@ impl Engine {
         let contexts = Vec::new();
         let pools = Vec::new();
         let sources = Vec::new();
+        let  system = System::new();
         Engine {arguments, contexts, sources, pools, handle, processor,
             current:0,
             connected: false,
@@ -120,7 +124,8 @@ impl Engine {
                 processed: AtomicU64::new(0),
                 duplicated_sources: AtomicU32::new(0),
                 disabled_sources: AtomicU32::new(0)}),
-            last_stats: None
+            last_stats: None,
+            system
         }
     }
 
@@ -184,6 +189,7 @@ impl Engine {
         let start = Instant::now();
         //for (context, pool) in self.contexts.iter().zip(self.pools.iter()) {
         for mut pool in self.pools.iter_mut() {
+            pool.disable_monitoring();
             pool.disconnect();
             pool.interrupt();;
         }
@@ -201,7 +207,7 @@ impl Engine {
         let start = Instant::now();
 
         self.stop();
-        self.add_pool();
+        self.add_pool()?;
         self.current = 0;
         self.connected = true;
         for source in self.sources.clone() {
@@ -267,12 +273,13 @@ impl Engine {
                 .cloned()
                 .collect();
 
-            for source in removed {
-                self.disconnect_endpoint(&source.address);
-            }
-
-            for source in added {
-                self.try_connect_endpoint(&source.address, &source.socket_type.map(Into::into));
+            if self.connected {
+                for source in removed {
+                    self.disconnect_endpoint(&source.address);
+                }
+                for source in added {
+                    self.try_connect_endpoint(&source.address, &source.socket_type.map(Into::into));
+                }
             }
             self.sources = sources;
             log::info!("Reconfigured in {:?}", start.elapsed());
@@ -302,10 +309,10 @@ impl Engine {
     fn connect_endpoint(&mut self, endpoint: &String, socket_type:&Option<SocketType>) -> IOResult<()> {
         let pool_size = self.pool_size();
         if self.endpoint_pool(endpoint).is_none(){
-            let mut pool = self.current();
-            if pool.connections() > pool_size {
+            let mut pool = self.current()?;
+            if pool.connections() >= pool_size {
                 self.add_pool()?;
-                pool = self.current();
+                pool = self.current()?;
             }
             pool.add_endpoint(endpoint, socket_type.clone(), None)?;
         }
@@ -322,8 +329,11 @@ impl Engine {
         log::debug!("Connecting to {} took {:?}", endpoint, start.elapsed());
     }
 
-    fn current(& mut self) -> &mut Pool {
-        &mut self.pools[self.current]
+    fn current(& mut self) -> IOResult<&mut Pool> {
+        if !self.connected   || self.current >= self.pools.len() {
+            return Err(IOError::new(ErrorKind::NotConnected, "Engine not started"));
+        }
+        Ok(&mut self.pools[self.current])
     }
 
     fn add_pool(&mut self) -> IOResult<()>  {
@@ -339,6 +349,8 @@ impl Engine {
         //pool.connect()?;
         let handle = self.handle.clone();
         let processor = Arc::clone(&self.processor);
+
+        let pool_index = self.pools.len();
 
         thread::spawn(move || {
             loop {
@@ -357,7 +369,11 @@ impl Engine {
                         });
                     }
                     Err(err) => {
-                        log::error!("Error receiving monitor event, quitting receive thread: {:?}",err);
+                        if App::is_started() {
+                            log::error!("Error in pool {} monitoring thread: {:?}", pool_index, err);
+                        } else {
+                            log::info!("Quitting pool {} monitoring thread: {:?}", pool_index, err);
+                        }
                         break;
                     }
                 }
@@ -447,8 +463,8 @@ impl Engine {
         endpoint_states
     }
 
-    pub fn stats(& self) -> Stats {
-        let (cpu, memory, files) = Self::process_resources();
+    pub fn stats(& mut self) -> Stats {
+        let (cpu, memory, files) = self.process_resources();
 
         let sources_stats = self.source_stats();
         let message_stats = self.message_stats();
@@ -560,12 +576,11 @@ impl Engine {
         self.processing_stats.processed.load(Ordering::Relaxed)
     }
 
-    pub fn process_resources() -> (f32, u64, usize) {
-        let mut system = System::new();
+    pub fn process_resources(&mut self) -> (f32, u64, usize) {
         let pid = Pid::from_u32(std::process::id());
-        system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-        if let Some(process) = system.process(pid) {
-            let open_files = system
+        self.system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        if let Some(process) = self.system.process(pid) {
+            let open_files = self.system
                 .process(pid)
                 .and_then(|process| process.open_files())
                 .unwrap_or(0);
@@ -588,7 +603,6 @@ impl Engine {
         let metadata_pending = self.processor.metadata_pending();
         let metadata_treated = self.processor.metadata_treated();
         let metadata_dropped = self.processor.metadata_dropped();
-
 
         let (received_rate, errors_rate, dropped_rate, processed_rate, treated_rate, channel_dropped_rate, max_pending, max_processing) = if let Some(last_stats) = self.last_stats.as_ref() {
             let new_received = if received < last_stats.received{received} else {received - last_stats.received};

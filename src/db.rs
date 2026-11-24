@@ -16,7 +16,7 @@ use scylla::_macro_internal::SerializeRow;
 use crate::arguments::StorageLayout;
 use crate::codec::{decode_optional, encode_to_i64, kind_to_dtype};
 
-#[derive(scylla::DeserializeRow)]
+#[derive(scylla::DeserializeRow, Debug)]
 struct TableName {
     table_name: String,
 }
@@ -33,7 +33,7 @@ struct Column {
 
 #[derive(scylla::DeserializeRow)]
 struct ColumnType {
-    cql_type: String,
+    column_type: String,
 }
 
 #[derive(scylla::DeserializeRow)]
@@ -223,7 +223,7 @@ impl DB {
     }
 
     async fn keyspace_exists(session: &Session) -> IOResult<bool> {
-        Ok(Self::keyspaces(session).await.unwrap_or_default().contains(Self::keyspace()))
+        Ok(Self::keyspaces(session).await?.contains(Self::keyspace()))
     }
 
     pub async fn keyspaces(session: &Session) ->  IOResult<Vec<String>> {
@@ -235,7 +235,7 @@ impl DB {
     }
 
     pub async fn table_exists(&self, name:&str) -> IOResult<bool> {
-        Ok(self.tables().await.unwrap_or_default().contains(&name.to_string()))
+        Ok(self.tables().await?.contains(&name.to_string()))
     }
 
     pub async fn tables(&self) -> IOResult<Vec<String>> {
@@ -253,7 +253,7 @@ impl DB {
         if rows.is_empty() {
             Err(IOError::other(format!("Column not found: {}-{}", table, column)))
         } else {
-            Ok(rows[0].cql_type.clone())
+            Ok(rows[0].column_type.clone())
         }
     }
 

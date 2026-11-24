@@ -288,12 +288,14 @@ impl Processor {
 
         };
 
-        if source_info.last_id > 0 {
-            if source_info.last_id >= id {
-                return Err(IOError::other( format!("Received unordered message for {:?} last: {:?}, id: {}", endpoint, source_info.last_id, id)));
-            } else if id != source_info.last_id + 1 {
-                //For testing if no message is missed
-                //log::warn!("Missed ID from  {:?} last: {:?}, id: {}", endpoint, source_info.last_id, id);
+        if self.arguments.monotonic {
+            if source_info.last_id > 0 {
+                if source_info.last_id >= id {
+                    return Err(IOError::other( format!("Received unordered message for {:?} last: {:?}, id: {}", endpoint, source_info.last_id, id)));
+                } else if id != source_info.last_id + 1 {
+                    //For testing if no message is missed
+                    //log::warn!("Missed ID from  {:?} last: {:?}, id: {}", endpoint, source_info.last_id, id);
+                }
             }
         }
 
@@ -342,7 +344,7 @@ impl Processor {
     }
 
     pub async fn on_endpoint_diag(&self, endpoint: String, diag: EndpointDiag, id: Option<u64>) {
-        log::debug!("Endpoint {} id {:?} diag: {:?}", endpoint, id, diag);
+        log::info!("Endpoint {} id {:?} diag: {:?}", endpoint, id, diag);
     }
 
 
